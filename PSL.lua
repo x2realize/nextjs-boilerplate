@@ -1,0 +1,3377 @@
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
+local RunService = game:GetService("RunService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local CollectionService = game:GetService("CollectionService")
+local Teams = game:GetService("Teams")
+local SoundService = game:GetService("SoundService")
+local Debris = game:GetService("Debris")
+local ContentProvider = game:GetService("ContentProvider")
+local VirtualInputManager = game:GetService("VirtualInputManager")
+local VirtualUser = game:GetService("VirtualUser")
+
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
+
+local LIBRARY_URL = "https://raw.githubusercontent.com/x2realize/128Bit.Libary/refs/heads/main/Library.lua"
+local LOGO_ID = "rbxassetid://97177675697505"
+local BACKGROUND_ID = "rbxassetid://109431613356049"
+
+local HYPERLASER_SOUND_ID = "rbxassetid://130113322"
+local NEVERLOSE_SOUND_ID = "rbxassetid://6607204501"
+
+-- โหลด UI Library (ผ่าน request)
+local function loadLibrary()
+	local response = request({ Url = LIBRARY_URL, Method = "GET" })
+	assert(response and response.Success, "Failed to download UI library.")
+
+	local chunk, compileError = loadstring(response.Body)
+	assert(chunk, compileError)
+
+	return chunk()
+end
+
+local Library = nil
+
+local function notify(title, content, notifType)
+	if not Library then return end
+	pcall(function()
+		Library:Notify({
+			Title = title,
+			Content = content,
+			Type = notifType or "Info",
+			Duration = 2,
+		})
+	end)
+end
+
+-- ตั้งค่าหน้าตา toggle โดยไม่ยิง callback ของเรา (ลองชื่อ method ที่ไลบรารีอาจมี)
+local function setToggleVisual(element, value)
+	for _, method in ipairs({ "Set", "SetValue", "Update" }) do
+		local success = pcall(function()
+			element[method](element, value)
+		end)
+		if success then
+			return
+		end
+	end
+end
+
+local Config = {
+	AutoArrest = false,
+	ArrestCooldown = true,
+	FastFire = false,
+	AutoSwitchReload = false,
+	NoSpread = false,
+	SilentAim = false,
+	FOVMode = "No FOV",
+	FOVRadius = 120,
+	AimPart = "Head",
+	FriendCheck = false,
+	WallCheck = false,
+	IgnoreTeams = {},
+	SwitchReloadGuns = {
+		["AK-47"] = true,
+		["FAL"] = true,
+		["M4A1"] = true,
+		["M700"] = true,
+		["MP5"] = true,
+		["M9"] = true,
+		["Remington 870"] = true,
+		["Revolver"] = true,
+	},
+	MeleeAura = false,
+	LoopSpeedEnabled = false,
+	WalkSpeed = 30,
+	FlyEnabled = false,
+	FlySpeed = 5,
+	InfJumpEnabled = false,
+	NoclipEnabled = false,
+	InvisibleEnabled = false,
+	DisableKeybinds = false,
+	FlyKey = "F",
+	NoclipKey = "J",
+	ESPEnabled = false,
+	ESPHPEnabled = true,
+	PurpleTracers = false,
+	CustomGunSound = false,
+	HitSoundEnabled = false,
+	AutoPickupItems = false,
+	AutoGetGun = false,
+	VehicleFlyEnabled = false,
+	SelectedGuns = {
+		["AK-47"] = true,
+	},
+}
+
+local SAVE_FOLDER = "StarCrowHub"
+local SAVE_FILE = SAVE_FOLDER .. "/Prison Life.json"
+local hasSavedSwitchReloadGuns = false
+
+local function sanitizeStringBoolMap(tbl, excludedKey)
+	local clean = {}
+	if type(tbl) ~= "table" then return clean end
+	for k, v in pairs(tbl) do
+		if type(k) == "string" and v == true and k ~= excludedKey then
+			clean[k] = true
+		elseif type(k) == "number" and type(v) == "string" and v ~= excludedKey then
+			clean[v] = true
+		end
+	end
+	return clean
+end
+
+local function SaveConfig()
+	pcall(function()
+		if not isfolder(SAVE_FOLDER) then makefolder(SAVE_FOLDER) end
+		writefile(SAVE_FILE, HttpService:JSONEncode(Config))
+	end)
+end
+
+local function LoadConfig()
+	pcall(function()
+		if isfile(SAVE_FILE) then
+			local decoded = HttpService:JSONDecode(readfile(SAVE_FILE))
+			if type(decoded) == "table" then
+				if decoded.SwitchReloadGuns == nil and type(decoded.SwitchGuns) == "table" then
+					decoded.SwitchReloadGuns = decoded.SwitchGuns
+				end
+				hasSavedSwitchReloadGuns = type(decoded.SwitchReloadGuns) == "table"
+				if decoded.SelectedGuns == nil and type(decoded.SelectedGun) == "string" and decoded.SelectedGun ~= "" then
+					decoded.SelectedGuns = { [decoded.SelectedGun] = true }
+				end
+				for k, v in pairs(decoded) do
+					if Config[k] ~= nil then
+						Config[k] = v
+					end
+				end
+			end
+		end
+	end)
+end
+
+LoadConfig()
+
+Config.IgnoreTeams = sanitizeStringBoolMap(Config.IgnoreTeams, "Neutral")
+Config.SwitchReloadGuns = sanitizeStringBoolMap(Config.SwitchReloadGuns, nil)
+Config.SelectedGuns = sanitizeStringBoolMap(Config.SelectedGuns, nil)
+Config.WalkSpeed = math.clamp(tonumber(Config.WalkSpeed) or 30, 30, 100)
+Config.FlySpeed = math.clamp(tonumber(Config.FlySpeed) or 5, 1, 10)
+
+task.spawn(function()
+	pcall(function()
+		ContentProvider:PreloadAsync({ HYPERLASER_SOUND_ID, NEVERLOSE_SOUND_ID })
+	end)
+end)
+
+LocalPlayer.Idled:Connect(function()
+	pcall(function()
+		VirtualUser:CaptureController()
+		VirtualUser:ClickButton2(Vector2.new(0, 0))
+	end)
+	pcall(function()
+		VirtualInputManager:SendMouseButtonEvent(0, 0, 2, true, game, 1)
+		task.wait(0.05)
+		VirtualInputManager:SendMouseButtonEvent(0, 0, 2, false, game, 1)
+	end)
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(300)
+		pcall(function()
+			VirtualUser:CaptureController()
+			VirtualUser:ClickButton2(Vector2.new(0, 0))
+		end)
+	end
+end)
+
+local friendCache = {}
+
+local function cacheFriend(player)
+	if player == LocalPlayer then return end
+	task.spawn(function()
+		local ok, isFriend = pcall(function()
+			return LocalPlayer:IsFriendsWith(player.UserId)
+		end)
+		if ok then
+			friendCache[player.UserId] = isFriend
+		end
+	end)
+end
+
+for _, player in ipairs(Players:GetPlayers()) do
+	cacheFriend(player)
+end
+
+Players.PlayerAdded:Connect(cacheFriend)
+Players.PlayerRemoving:Connect(function(player)
+	friendCache[player.UserId] = nil
+end)
+
+local origToolAttrs = setmetatable({}, { __mode = "k" })
+local origGunState = setmetatable({}, { __mode = "k" })
+local trackedGunTools = setmetatable({}, { __mode = "k" })
+
+local GunRemotesFolder = nil
+local ShootEvent = nil
+local FuncReloadRemote = nil
+
+local function ensureGunRemotes()
+	if ShootEvent and FuncReloadRemote then return end
+	if not GunRemotesFolder then
+		GunRemotesFolder = ReplicatedStorage:FindFirstChild("GunRemotes")
+	end
+	if GunRemotesFolder then
+		if not ShootEvent then
+			ShootEvent = GunRemotesFolder:FindFirstChild("ShootEvent")
+		end
+		if not FuncReloadRemote then
+			FuncReloadRemote = GunRemotesFolder:FindFirstChild("FuncReload")
+		end
+	end
+end
+
+task.spawn(function()
+	local folder = ReplicatedStorage:FindFirstChild("GunRemotes") or ReplicatedStorage:WaitForChild("GunRemotes", 15)
+	if folder then
+		GunRemotesFolder = folder
+		ShootEvent = folder:FindFirstChild("ShootEvent") or folder:WaitForChild("ShootEvent", 15)
+		FuncReloadRemote = folder:FindFirstChild("FuncReload") or folder:WaitForChild("FuncReload", 15)
+	end
+end)
+
+local function playLocalEffectSound(soundId, volume)
+	if not soundId or soundId == "" then return end
+	pcall(function()
+		local s = Instance.new("Sound")
+		s.SoundId = soundId
+		s.Volume = volume or 0.85
+		s.PlayOnRemove = false
+		s.Parent = SoundService
+		s:Play()
+		Debris:AddItem(s, 3)
+	end)
+end
+
+local PURPLE_TRACER_COLOR = Color3.fromRGB(170, 70, 255)
+local hookedCameras = setmetatable({}, { __mode = "k" })
+
+local function hookCameraTracers(cam)
+	if not cam or hookedCameras[cam] then return end
+	hookedCameras[cam] = true
+	cam.ChildAdded:Connect(function(child)
+		if not Config.PurpleTracers then return end
+		if not child:IsA("BasePart") or child.Name ~= "RayPart" then return end
+		local char = LocalPlayer.Character
+		if not char then return end
+		local originRef = nil
+		for _, item in ipairs(char:GetChildren()) do
+			if item:IsA("Tool") and item:GetAttribute("ToolType") == "Gun" then
+				local muzzle = item:FindFirstChild("Muzzle")
+				if muzzle and muzzle:IsA("BasePart") then
+					originRef = muzzle.Position
+					break
+				end
+			end
+		end
+		if not originRef then
+			local head = char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+			originRef = head and head.Position
+		end
+		if not originRef then return end
+		local startPos = child.Position - child.CFrame.LookVector * (child.Size.Z * 0.5)
+		if (startPos - originRef).Magnitude <= 18 then
+			child.Color = PURPLE_TRACER_COLOR
+			for _, desc in ipairs(child:GetDescendants()) do
+				if desc:IsA("Light") then
+					desc.Color = PURPLE_TRACER_COLOR
+				end
+			end
+		end
+	end)
+end
+
+hookCameraTracers(workspace.CurrentCamera)
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+	hookCameraTracers(workspace.CurrentCamera)
+end)
+
+local function isGunTool(tool)
+	return tool and tool:IsA("Tool") and tool:GetAttribute("ToolType") == "Gun"
+end
+
+local function isTaserTool(tool)
+	return tool and (tool.Name == "Taser" or tool:GetAttribute("Behavior") == "Taser")
+end
+
+local function saveOriginalToolAttrs(tool)
+	if not isGunTool(tool) then return nil end
+	trackedGunTools[tool] = true
+	if not origToolAttrs[tool] then
+		origToolAttrs[tool] = {
+			FireRate = tool:GetAttribute("FireRate"),
+			AutoFire = tool:GetAttribute("AutoFire"),
+			ChargeTime = tool:GetAttribute("ChargeTime"),
+			SpreadRadius = tool:GetAttribute("SpreadRadius"),
+		}
+	end
+	return origToolAttrs[tool]
+end
+
+local function applyModToTool(tool)
+	local orig = saveOriginalToolAttrs(tool)
+	if not orig then return end
+	if orig.FireRate ~= nil then
+		tool:SetAttribute("FireRate", Config.FastFire and 0 or orig.FireRate)
+	end
+	if orig.ChargeTime ~= nil then
+		tool:SetAttribute("ChargeTime", Config.FastFire and 0 or orig.ChargeTime)
+	end
+	if orig.AutoFire ~= nil then
+		tool:SetAttribute("AutoFire", Config.FastFire and true or orig.AutoFire)
+	end
+	if orig.SpreadRadius ~= nil then
+		tool:SetAttribute("SpreadRadius", Config.NoSpread and 0 or orig.SpreadRadius)
+	end
+end
+
+local function getEquippedGunOriginals()
+	local char = LocalPlayer.Character
+	if not char then return nil end
+	for _, child in ipairs(char:GetChildren()) do
+		if isGunTool(child) and origToolAttrs[child] then
+			return origToolAttrs[child]
+		end
+	end
+	return nil
+end
+
+local function patchLiveGunStateTable(obj, equippedOrig)
+	if type(obj) ~= "table" then return end
+	if not origGunState[obj] then
+		if equippedOrig then
+			origGunState[obj] = {
+				FireRate = equippedOrig.FireRate,
+				AutoFire = equippedOrig.AutoFire,
+				ChargeTime = equippedOrig.ChargeTime,
+				SpreadRadius = equippedOrig.SpreadRadius,
+			}
+		else
+			origGunState[obj] = {
+				FireRate = rawget(obj, "FireRate"),
+				AutoFire = rawget(obj, "AutoFire"),
+				ChargeTime = rawget(obj, "ChargeTime"),
+				SpreadRadius = rawget(obj, "SpreadRadius"),
+			}
+		end
+	end
+	local orig = origGunState[obj]
+	if orig.FireRate ~= nil then
+		obj.FireRate = Config.FastFire and 0 or orig.FireRate
+	end
+	if orig.ChargeTime ~= nil then
+		obj.ChargeTime = Config.FastFire and 0 or orig.ChargeTime
+	end
+	if orig.AutoFire ~= nil then
+		obj.AutoFire = Config.FastFire and true or orig.AutoFire
+	end
+	if orig.SpreadRadius ~= nil then
+		obj.SpreadRadius = Config.NoSpread and 0 or orig.SpreadRadius
+	end
+end
+
+local function applyGunMods()
+	local char = LocalPlayer.Character
+	if char then
+		for _, child in ipairs(char:GetChildren()) do
+			if isGunTool(child) then
+				applyModToTool(child)
+			end
+		end
+	end
+	local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+	if bp then
+		for _, child in ipairs(bp:GetChildren()) do
+			if isGunTool(child) then
+				applyModToTool(child)
+			end
+		end
+	end
+	for tool in pairs(trackedGunTools) do
+		if tool and tool.Parent then
+			applyModToTool(tool)
+		end
+	end
+	local equippedOrig = getEquippedGunOriginals()
+	local getupvals = (debug and debug.getupvalues) or getupvalues
+	if getconnections and getupvals then
+		pcall(function()
+			local seenFuncs = {}
+			local function scanFunc(fn, depth)
+				if type(fn) ~= "function" or seenFuncs[fn] or depth > 2 then return end
+				seenFuncs[fn] = true
+				for _, val in pairs(getupvals(fn)) do
+					if type(val) == "table" and rawget(val, "ToolType") == "Gun" and type(rawget(val, "FireRate")) == "number" then
+						patchLiveGunStateTable(val, equippedOrig)
+					elseif type(val) == "function" then
+						scanFunc(val, depth + 1)
+					end
+				end
+			end
+			for _, conn in ipairs(getconnections(UserInputService.InputBegan)) do
+				if conn.Function then
+					scanFunc(conn.Function, 0)
+				end
+			end
+		end)
+	end
+	if getgc then
+		pcall(function()
+			for _, obj in ipairs(getgc(true)) do
+				if type(obj) == "table" and rawget(obj, "ToolType") == "Gun" and type(rawget(obj, "FireRate")) == "number" then
+					patchLiveGunStateTable(obj, equippedOrig)
+				end
+			end
+		end)
+	end
+end
+
+local reloadingGunTools = setmetatable({}, { __mode = "k" })
+local hookedReloadTools = setmetatable({}, { __mode = "k" })
+local hookedSoundHandles = setmetatable({}, { __mode = "k" })
+local switchingReloadLock = false
+
+local function isGunSelected(map, tool)
+	return type(map) == "table" and tool ~= nil and map[tool.Name] == true
+end
+
+local function isGunReadyToSwitch(tool, excludedTool)
+	if not tool or tool == excludedTool then return false end
+	if not isGunTool(tool) then return false end
+	if not isGunSelected(Config.SwitchReloadGuns, tool) then return false end
+	if (tool:GetAttribute("Local_ReloadSession") or 0) > 0 or reloadingGunTools[tool] then
+		return false
+	end
+	if tool:GetAttribute("Behavior") == "Sniper" and (tool:GetAttribute("CurrentAmmo") or 0) <= 0 and (tool:GetAttribute("StoredAmmo") or 0) <= 0 then
+		return false
+	end
+	local curAmmo = tool:GetAttribute("CurrentAmmo")
+	local localAmmo = tool:GetAttribute("Local_CurrentAmmo")
+	if curAmmo ~= nil and curAmmo <= 0 then
+		return false
+	end
+	if localAmmo ~= nil and localAmmo <= 0 and not (curAmmo ~= nil and curAmmo > 0) then
+		return false
+	end
+	return true
+end
+
+local function findNextLoadedSwitchGun(excludedTool)
+	local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+	if not bp then return nil end
+	for _, child in ipairs(bp:GetChildren()) do
+		if isGunReadyToSwitch(child, excludedTool) then
+			return child
+		end
+	end
+	return nil
+end
+
+local cachedGunReloadFunc = nil
+local lastReloadScanTime = 0
+
+local function findGunReloadFunc()
+	if cachedGunReloadFunc then return cachedGunReloadFunc end
+	local now = os.clock()
+	if now - lastReloadScanTime < 0.5 then return nil end
+	lastReloadScanTime = now
+	ensureGunRemotes()
+	if not FuncReloadRemote or not getconnections then return nil end
+	local getupvals = (debug and debug.getupvalues) or getupvalues
+	if not getupvals then return nil end
+	local ok, found = pcall(function()
+		local seen = {}
+		local function scan(fn, depth)
+			if type(fn) ~= "function" or seen[fn] or depth > 3 then return nil end
+			seen[fn] = true
+			local upvals = getupvals(fn)
+			for _, val in pairs(upvals) do
+				if val == FuncReloadRemote then
+					return fn
+				end
+			end
+			for _, val in pairs(upvals) do
+				if type(val) == "function" then
+					local res = scan(val, depth + 1)
+					if res then return res end
+				end
+			end
+			return nil
+		end
+		for _, conn in ipairs(getconnections(UserInputService.InputBegan)) do
+			if conn.Function then
+				local res = scan(conn.Function, 0)
+				if res then return res end
+			end
+		end
+		return nil
+	end)
+	if ok and found then
+		cachedGunReloadFunc = found
+	end
+	return cachedGunReloadFunc
+end
+
+local function startBackgroundReloadSync(tool)
+	if not tool then return false end
+	if tool:GetAttribute("Behavior") == "Sniper" and (tool:GetAttribute("StoredAmmo") or 0) <= 0 then
+		return false
+	end
+	if reloadingGunTools[tool] then
+		return true
+	end
+	ensureGunRemotes()
+	reloadingGunTools[tool] = true
+	local reloadTime = tonumber(tool:GetAttribute("ReloadTime")) or 2
+	local existingSession = tool:GetAttribute("Local_ReloadSession") or 0
+	local mySession = existingSession
+	if existingSession <= 0 then
+		mySession = tick()
+		tool:SetAttribute("Local_ReloadSession", mySession)
+	end
+
+	local finished = false
+	local ammoConn = nil
+	local lastObservedAmmo = tool:GetAttribute("CurrentAmmo") or 0
+
+	local function finishReloadSync(syncAmmo)
+		if finished then return end
+		finished = true
+		if ammoConn then
+			ammoConn:Disconnect()
+			ammoConn = nil
+		end
+		if tool.Parent then
+			local updatedAmmo = tool:GetAttribute("CurrentAmmo")
+			if syncAmmo and updatedAmmo and updatedAmmo > 0 then
+				tool:SetAttribute("Local_CurrentAmmo", updatedAmmo)
+			end
+			if tool:GetAttribute("Local_ReloadSession") == mySession then
+				tool:SetAttribute("Local_ReloadSession", 0)
+			end
+		end
+		reloadingGunTools[tool] = nil
+	end
+
+	ammoConn = tool:GetAttributeChangedSignal("CurrentAmmo"):Connect(function()
+		local cur = tool:GetAttribute("CurrentAmmo")
+		if cur and cur > lastObservedAmmo and cur > 0 then
+			finishReloadSync(true)
+		elseif cur then
+			lastObservedAmmo = cur
+		end
+	end)
+
+	if existingSession <= 0 and FuncReloadRemote then
+		task.spawn(function()
+			pcall(function()
+				FuncReloadRemote:InvokeServer()
+			end)
+			if finished then return end
+			local maxAmmo = tool:GetAttribute("MaxAmmo") or 1
+			local curNow = tool:GetAttribute("CurrentAmmo") or 0
+			if curNow > 0 and (curNow > lastObservedAmmo or curNow >= maxAmmo) then
+				finishReloadSync(true)
+				return
+			end
+			task.wait(0.08)
+			if finished then return end
+			local curAfter = tool:GetAttribute("CurrentAmmo") or 0
+			finishReloadSync(curAfter > 0 and (curAfter > lastObservedAmmo or curAfter >= maxAmmo))
+		end)
+	end
+
+	task.delay(reloadTime + 1.5, function()
+		if not finished then
+			local maxAmmo = tool:GetAttribute("MaxAmmo") or 1
+			local cur = tool:GetAttribute("CurrentAmmo") or 0
+			finishReloadSync(cur > 0 and (cur > lastObservedAmmo or cur >= maxAmmo))
+		end
+	end)
+
+	return true
+end
+
+local function onGunEmptyCheck(tool)
+	if not Config.AutoSwitchReload then return end
+	if switchingReloadLock then return end
+	if not isGunTool(tool) then return end
+	local char = LocalPlayer.Character
+	if not char or tool.Parent ~= char then return end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return end
+	local localAmmo = tool:GetAttribute("Local_CurrentAmmo")
+	if not localAmmo or localAmmo > 0 then return end
+	if tool:GetAttribute("Behavior") == "Sniper" and (tool:GetAttribute("StoredAmmo") or 0) <= 0 then return end
+
+	if not isGunSelected(Config.SwitchReloadGuns, tool) then return end
+
+	switchingReloadLock = true
+	local ok, err = pcall(function()
+		local nextGun = findNextLoadedSwitchGun(tool)
+		if not nextGun then
+			if (tool:GetAttribute("Local_ReloadSession") or 0) <= 0 then
+				local reloadFn = findGunReloadFunc()
+				if reloadFn then
+					task.spawn(reloadFn)
+				else
+					startBackgroundReloadSync(tool)
+				end
+			end
+			return
+		end
+		startBackgroundReloadSync(tool)
+		task.wait(0.02)
+		if not Config.AutoSwitchReload then return end
+		local curChar = LocalPlayer.Character
+		local curHum = curChar and curChar:FindFirstChildOfClass("Humanoid")
+		local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+		if not curChar or not curHum or curHum.Health <= 0 or tool.Parent ~= curChar or not bp then
+			return
+		end
+		local switchTarget = (nextGun.Parent == bp and isGunReadyToSwitch(nextGun, tool)) and nextGun or findNextLoadedSwitchGun(tool)
+		if switchTarget and switchTarget.Parent == bp then
+			curHum:EquipTool(switchTarget)
+		end
+	end)
+	switchingReloadLock = false
+	if not ok and err then
+		warn(err)
+	end
+end
+
+local function hookToolSoundHandle(tool, handle)
+	if not handle or hookedSoundHandles[handle] then return end
+	hookedSoundHandles[handle] = true
+	handle.ChildAdded:Connect(function(added)
+		if not Config.CustomGunSound then return end
+		if tool.Parent ~= LocalPlayer.Character then return end
+		if added:IsA("Sound") and added.Name == "ShootSound" then
+			pcall(function()
+				added.Volume = 0
+			end)
+			playLocalEffectSound(HYPERLASER_SOUND_ID, 0.8)
+		end
+	end)
+end
+
+local function hookToolEffectsAndReload(tool)
+	if not isGunTool(tool) then return end
+	local handle = tool:FindFirstChild("Handle")
+	if handle then
+		hookToolSoundHandle(tool, handle)
+	end
+	if not hookedReloadTools[tool] then
+		hookedReloadTools[tool] = true
+		tool.ChildAdded:Connect(function(child)
+			if child.Name == "Handle" then
+				hookToolSoundHandle(tool, child)
+			end
+		end)
+		tool:GetAttributeChangedSignal("Local_CurrentAmmo"):Connect(function()
+			local ammo = tool:GetAttribute("Local_CurrentAmmo")
+			if Config.AutoSwitchReload and ammo ~= nil and ammo <= 0 and tool.Parent == LocalPlayer.Character then
+				task.spawn(onGunEmptyCheck, tool)
+			end
+		end)
+	end
+end
+
+local function watchToolContainer(container)
+	if not container then return end
+	for _, child in ipairs(container:GetChildren()) do
+		if isGunTool(child) then
+			saveOriginalToolAttrs(child)
+			hookToolEffectsAndReload(child)
+			if Config.FastFire or Config.NoSpread then
+				applyModToTool(child)
+			end
+		end
+	end
+	container.ChildAdded:Connect(function(child)
+		if isGunTool(child) then
+			saveOriginalToolAttrs(child)
+			hookToolEffectsAndReload(child)
+			if Config.FastFire or Config.NoSpread then
+				applyModToTool(child)
+				task.defer(applyGunMods)
+			end
+		elseif child:IsA("Tool") then
+			task.defer(function()
+				if child.Parent and isGunTool(child) then
+					saveOriginalToolAttrs(child)
+					hookToolEffectsAndReload(child)
+					if Config.FastFire or Config.NoSpread then
+						applyModToTool(child)
+						applyGunMods()
+					end
+				end
+			end)
+		end
+	end)
+end
+
+local function onCharacterAddedForGuns(char)
+	watchToolContainer(char)
+end
+
+if LocalPlayer.Character then
+	onCharacterAddedForGuns(LocalPlayer.Character)
+end
+LocalPlayer.CharacterAdded:Connect(onCharacterAddedForGuns)
+
+do
+	local existingBp = LocalPlayer:FindFirstChildOfClass("Backpack")
+	if existingBp then
+		watchToolContainer(existingBp)
+	end
+end
+LocalPlayer.ChildAdded:Connect(function(child)
+	if child:IsA("Backpack") then
+		watchToolContainer(child)
+	end
+end)
+
+if Config.FastFire or Config.NoSpread then
+	task.defer(applyGunMods)
+end
+
+local function isSameTeam(player)
+	if LocalPlayer.Team and player.Team then
+		return LocalPlayer.Team == player.Team
+	end
+	if LocalPlayer.TeamColor and player.TeamColor then
+		return LocalPlayer.TeamColor == player.TeamColor
+	end
+	return false
+end
+
+local insideInternalRaycast = false
+
+local invisSavedCF = nil
+local invisSavedVel = nil
+local invisUndergroundCF = nil
+local invisPaused = false
+local invisSpawnReadyAt = 0
+
+local function isAtUndergroundCF(hrp)
+	if not hrp or not invisUndergroundCF then return false end
+	return (hrp.Position - invisUndergroundCF.Position).Magnitude < 1.5
+end
+
+local function restoreInvisRoot()
+	local char = LocalPlayer.Character
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if hrp and invisSavedCF and isAtUndergroundCF(hrp) then
+		hrp.CFrame = invisSavedCF
+		if invisSavedVel then
+			hrp.AssemblyLinearVelocity = invisSavedVel
+		end
+		hrp.AssemblyAngularVelocity = Vector3.zero
+	end
+	invisUndergroundCF = nil
+end
+
+local function adjustInvisOrigin(origin)
+	if not Config.InvisibleEnabled or invisPaused or not invisSavedCF or not invisUndergroundCF then
+		return origin
+	end
+	if (origin - invisUndergroundCF.Position).Magnitude < (origin - invisSavedCF.Position).Magnitude then
+		return invisSavedCF:PointToWorldSpace(invisUndergroundCF:PointToObjectSpace(origin))
+	end
+	return origin
+end
+
+local ArrestPlayerRemote = nil
+task.spawn(function()
+	local remotes = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage:WaitForChild("Remotes", 15)
+	if remotes then
+		ArrestPlayerRemote = remotes:FindFirstChild("ArrestPlayer") or remotes:WaitForChild("ArrestPlayer", 15)
+	end
+end)
+
+local ARREST_COOLDOWN_SECONDS = 6
+local arrestCooldownUntil = 0
+local arrestCooldownDuration = ARREST_COOLDOWN_SECONDS
+local hookedArrestAttrTargets = setmetatable({}, { __mode = "k" })
+
+local function setArrestCooldownTimer(remaining, total)
+	if type(remaining) ~= "number" or remaining <= 0 then return end
+	local clamped = math.clamp(remaining, 0.05, 120)
+	arrestCooldownUntil = os.clock() + clamped
+	arrestCooldownDuration = math.max(tonumber(total) or clamped, clamped, 0.1)
+end
+
+local function findHandcuffsTool()
+	local containers = { LocalPlayer.Character, LocalPlayer:FindFirstChildOfClass("Backpack") }
+	for _, container in ipairs(containers) do
+		if container then
+			for _, child in ipairs(container:GetChildren()) do
+				if child:IsA("Tool") and (child.Name == "Handcuffs" or child:GetAttribute("ToolType") == "Handcuffs" or child:GetAttribute("Behavior") == "Handcuffs") then
+					return child
+				end
+			end
+		end
+	end
+	return nil
+end
+
+local function processArrestCooldownAttr(inst, attrName, val)
+	local lower = tostring(attrName):lower()
+	if not (lower:find("arrest") or lower:find("cuff")) then
+		return
+	end
+	if type(val) == "number" then
+		local now = os.clock()
+		local srvNow = nil
+		pcall(function()
+			srvNow = workspace:GetServerTimeNow()
+		end)
+		local tickNow = tick()
+		local unixNow = os.time()
+		if lower:find("last") then
+			local dur = ARREST_COOLDOWN_SECONDS
+			local elapsed = nil
+			if srvNow and math.abs(srvNow - val) < 120 then
+				elapsed = srvNow - val
+			elseif math.abs(tickNow - val) < 120 then
+				elapsed = tickNow - val
+			elseif math.abs(unixNow - val) < 120 then
+				elapsed = unixNow - val
+			elseif math.abs(now - val) < 120 then
+				elapsed = now - val
+			end
+			if elapsed and elapsed >= 0 and elapsed < dur then
+				setArrestCooldownTimer(dur - elapsed, dur)
+			end
+		elseif lower:find("end") or lower:find("until") or lower:find("next") or lower:find("expire") then
+			local rem = nil
+			if srvNow and val > srvNow and val - srvNow <= 120 then
+				rem = val - srvNow
+			elseif val > tickNow and val - tickNow <= 120 then
+				rem = val - tickNow
+			elseif val > unixNow and val - unixNow <= 120 then
+				rem = val - unixNow
+			elseif val > now and val - now <= 120 then
+				rem = val - now
+			end
+			if rem then
+				setArrestCooldownTimer(rem, math.max(rem, ARREST_COOLDOWN_SECONDS))
+			end
+		elseif lower:find("remain") or lower == "arrestcooldown" or lower == "handcuffcooldown" or lower == "cuffcooldown" then
+			if val > 0 and val <= 120 then
+				setArrestCooldownTimer(val, math.max(val, ARREST_COOLDOWN_SECONDS))
+			elseif val <= 0 then
+				arrestCooldownUntil = 0
+			end
+		end
+	end
+end
+
+local function syncArrestCooldownFromAttributes(inst)
+	if not inst then return end
+	for attrName, val in pairs(inst:GetAttributes()) do
+		processArrestCooldownAttr(inst, attrName, val)
+	end
+end
+
+local function hookArrestAttributeTarget(inst)
+	if not inst or hookedArrestAttrTargets[inst] then return end
+	hookedArrestAttrTargets[inst] = true
+	syncArrestCooldownFromAttributes(inst)
+	inst.AttributeChanged:Connect(function(attrName)
+		processArrestCooldownAttr(inst, attrName, inst:GetAttribute(attrName))
+	end)
+end
+
+hookArrestAttributeTarget(LocalPlayer)
+LocalPlayer:GetPropertyChangedSignal("Team"):Connect(function()
+	if not LocalPlayer.Team or LocalPlayer.Team.Name ~= "Guards" then
+		arrestCooldownUntil = 0
+	end
+end)
+
+local function onArrestInvokeResult(ok, r1, r2, target, wasArrestedBefore)
+	if not ok then return end
+	if r1 == true then
+		setArrestCooldownTimer(ARREST_COOLDOWN_SECONDS, ARREST_COOLDOWN_SECONDS)
+		return
+	end
+	syncArrestCooldownFromAttributes(LocalPlayer)
+	syncArrestCooldownFromAttributes(LocalPlayer.Character)
+	syncArrestCooldownFromAttributes(findHandcuffsTool())
+	if r1 == false then
+		return
+	end
+	if not wasArrestedBefore and typeof(target) == "Instance" and target:IsA("Player") then
+		task.delay(0.15, function()
+			syncArrestCooldownFromAttributes(LocalPlayer)
+			syncArrestCooldownFromAttributes(LocalPlayer.Character)
+			syncArrestCooldownFromAttributes(findHandcuffsTool())
+			local tChar = target.Character
+			if target:GetAttribute("Arrested") or (tChar and tChar:GetAttribute("Arrested")) then
+				if arrestCooldownUntil - os.clock() <= 0 then
+					setArrestCooldownTimer(ARREST_COOLDOWN_SECONDS, ARREST_COOLDOWN_SECONDS)
+				end
+			end
+		end)
+	end
+end
+
+local ArrestHUD = {}
+do
+	local ArrestGui = Instance.new("ScreenGui")
+	ArrestGui.Name = "StarCrowArrestGui"
+	ArrestGui.IgnoreGuiInset = true
+	ArrestGui.ResetOnSpawn = false
+	ArrestGui.DisplayOrder = 10000
+	pcall(function() ArrestGui.Parent = game:GetService("CoreGui") end)
+	if not ArrestGui.Parent then ArrestGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+	local frame = Instance.new("Frame")
+	frame.Name = "ArrestCooldownFrame"
+	frame.Size = UDim2.new(0, 148, 0, 28)
+	frame.Position = UDim2.new(0.5, -74, 0, 14)
+	frame.BackgroundColor3 = Color3.fromRGB(18, 18, 28)
+	frame.BorderSizePixel = 0
+	frame.ClipsDescendants = true
+	frame.Visible = false
+	frame.Parent = ArrestGui
+	Instance.new("UICorner", frame).CornerRadius = UDim.new(0, 8)
+
+	local arrestStroke = Instance.new("UIStroke", frame)
+	arrestStroke.Thickness = 1.4
+	arrestStroke.Color = Color3.fromRGB(140, 60, 255)
+
+	local fill = Instance.new("Frame")
+	fill.Size = UDim2.new(1, 0, 1, 0)
+	fill.BackgroundColor3 = Color3.fromRGB(130, 0, 255)
+	fill.BackgroundTransparency = 0.65
+	fill.BorderSizePixel = 0
+	fill.ZIndex = 1
+	fill.Parent = frame
+
+	local arrestFillGrad = Instance.new("UIGradient", fill)
+	arrestFillGrad.Color = ColorSequence.new({
+		ColorSequenceKeypoint.new(0, Color3.fromRGB(130, 0, 255)),
+		ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 130, 255)),
+	})
+
+	local label = Instance.new("TextLabel")
+	label.Size = UDim2.new(1, 0, 1, 0)
+	label.BackgroundTransparency = 1
+	label.Font = Enum.Font.GothamBold
+	label.TextSize = 13
+	label.TextColor3 = Color3.fromRGB(255, 255, 255)
+	label.TextStrokeTransparency = 0.35
+	label.Text = "Arrest 0.0s"
+	label.ZIndex = 2
+	label.Parent = frame
+
+	ArrestHUD.Frame = frame
+	ArrestHUD.Fill = fill
+	ArrestHUD.Label = label
+
+	local activeInput, dragStart, startPos = nil, nil, nil
+	frame.InputBegan:Connect(function(input)
+		if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+			activeInput = input
+			dragStart = input.Position
+			startPos = frame.Position
+		end
+	end)
+	UserInputService.InputChanged:Connect(function(input)
+		if not activeInput then return end
+		local isMatchingDrag = (input == activeInput) or (activeInput.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement)
+		if isMatchingDrag then
+			local delta = input.Position - dragStart
+			frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+		end
+	end)
+	UserInputService.InputEnded:Connect(function(input)
+		if activeInput and input == activeInput then
+			activeInput = nil
+			dragStart = nil
+			startPos = nil
+		end
+	end)
+end
+
+local function isTargetVisible(fromPos, targetPart, targetChar)
+	local prevInternal = insideInternalRaycast
+	insideInternalRaycast = true
+	local ok, visible = pcall(function()
+		local ignoreList = { targetChar }
+		if LocalPlayer.Character then
+			table.insert(ignoreList, LocalPlayer.Character)
+		end
+		if workspace.CurrentCamera then
+			table.insert(ignoreList, workspace.CurrentCamera)
+		end
+		local params = RaycastParams.new()
+		params.FilterType = Enum.RaycastFilterType.Exclude
+		params.CollisionGroup = "ClientBullet"
+		params.IgnoreWater = true
+		local currentOrigin = fromPos
+		local targetPos = targetPart.Position
+		for _ = 1, 5 do
+			params.FilterDescendantsInstances = ignoreList
+			local dir = targetPos - currentOrigin
+			if dir.Magnitude < 0.01 then
+				return true
+			end
+			local res = workspace:Raycast(currentOrigin, dir, params)
+			if not res then
+				return true
+			end
+			local hit = res.Instance
+			if hit.Transparency >= 0.9 or not hit.CanCollide then
+				table.insert(ignoreList, hit)
+				currentOrigin = res.Position + dir.Unit * 0.05
+			else
+				return false
+			end
+		end
+		return false
+	end)
+	insideInternalRaycast = prevInternal
+	if ok then
+		return visible
+	end
+	return false
+end
+
+local function getAimPartFromCharacter(char)
+	if Config.AimPart == "Body" then
+		return char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso") or char:FindFirstChild("HumanoidRootPart")
+	end
+	return char:FindFirstChild("Head") or char:FindFirstChild("HumanoidRootPart")
+end
+
+local function getAimReferencePoint(cam)
+	return Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+end
+
+local function isTeamIgnored(player)
+	local team = player.Team
+	if team and Config.IgnoreTeams[team.Name] then
+		return true
+	end
+	return false
+end
+
+local function isNeutralPlayer(player)
+	local neutralTeam = Teams:FindFirstChild("Neutral")
+	if neutralTeam and player.Team == neutralTeam then
+		return true
+	end
+	return player.Team == nil
+end
+
+local function getPlayerFromHitInstance(inst)
+	local cur = inst
+	while cur and cur ~= workspace do
+		if cur:IsA("Model") then
+			local p = Players:GetPlayerFromCharacter(cur)
+			if p then
+				return p, cur
+			end
+		end
+		cur = cur.Parent
+	end
+	return nil, nil
+end
+
+local function canGameDamage(player)
+	if not player or player == LocalPlayer then return false end
+	if isNeutralPlayer(player) then return false end
+	if player.Team == LocalPlayer.Team then return false end
+	local char = player.Character
+	if not char then return false end
+	local guardsTeam = Teams:FindFirstChild("Guards")
+	local inmatesTeam = Teams:FindFirstChild("Inmates")
+	if guardsTeam and inmatesTeam and LocalPlayer.Team == guardsTeam and player.Team == inmatesTeam then
+		if not char:GetAttribute("Hostile") then
+			return false
+		end
+	end
+	if char:FindFirstChildOfClass("ForceField") then return false end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if not hum or hum.Health <= 0 then return false end
+	return true
+end
+
+local function getSilentAimTargetPart()
+	Camera = workspace.CurrentCamera
+	if not Camera then return nil end
+	local myChar = LocalPlayer.Character
+	local myHead = myChar and myChar:FindFirstChild("Head")
+	local rayOrigin = (myHead and myHead.Position) or Camera.CFrame.Position
+	local refPoint = getAimReferencePoint(Camera)
+	local useFOV = Config.FOVMode == "FOV"
+	local maxRadius = tonumber(Config.FOVRadius) or 120
+	local bestPart = nil
+	local bestDist = useFOV and maxRadius or math.huge
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer then
+			local skip = false
+			if isTeamIgnored(player) then
+				skip = true
+			end
+			if not skip and Config.FriendCheck and friendCache[player.UserId] then
+				skip = true
+			end
+			if not skip then
+				local char = player.Character
+				local hum = char and char:FindFirstChildOfClass("Humanoid")
+				local part = char and getAimPartFromCharacter(char)
+				if hum and hum.Health > 0 and part and not char:FindFirstChildOfClass("ForceField") then
+					local screenPos = Camera:WorldToViewportPoint(part.Position)
+					if screenPos.Z > 0 then
+						local dist2D = (Vector2.new(screenPos.X, screenPos.Y) - refPoint).Magnitude
+						if dist2D < bestDist then
+							if not Config.WallCheck or isTargetVisible(rayOrigin, part, char) then
+								bestDist = dist2D
+								bestPart = part
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+
+	return bestPart
+end
+
+local cachedSilentTarget = nil
+local fovCircle = nil
+local fovGui = nil
+local fovFrame = nil
+
+if Drawing and Drawing.new then
+	pcall(function()
+		local c = Drawing.new("Circle")
+		c.Color = Color3.fromRGB(170, 70, 255)
+		c.Thickness = 1.8
+		c.NumSides = 64
+		c.Filled = false
+		c.Transparency = 1
+		c.Visible = false
+		fovCircle = c
+	end)
+end
+
+if not fovCircle then
+	fovGui = Instance.new("ScreenGui")
+	fovGui.Name = "StarCrowFOVGui"
+	fovGui.IgnoreGuiInset = true
+	fovGui.ResetOnSpawn = false
+	fovGui.DisplayOrder = 9999
+	pcall(function() fovGui.Parent = game:GetService("CoreGui") end)
+	if not fovGui.Parent then fovGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+	fovFrame = Instance.new("Frame")
+	fovFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+	fovFrame.BackgroundTransparency = 1
+	fovFrame.BorderSizePixel = 0
+	fovFrame.Visible = false
+	fovFrame.Parent = fovGui
+	Instance.new("UICorner", fovFrame).CornerRadius = UDim.new(1, 0)
+	local stroke = Instance.new("UIStroke", fovFrame)
+	stroke.Color = Color3.fromRGB(170, 70, 255)
+	stroke.Thickness = 1.8
+end
+
+local function handleHitSoundFromBullets(bullets)
+	if not Config.HitSoundEnabled or type(bullets) ~= "table" then return end
+	for i = 1, #bullets do
+		local b = bullets[i]
+		if type(b) == "table" then
+			local hitInst = b[3]
+			if typeof(hitInst) == "Instance" then
+				local player = getPlayerFromHitInstance(hitInst)
+				if player and canGameDamage(player) then
+					playLocalEffectSound(NEVERLOSE_SOUND_ID, 0.9)
+					return
+				end
+			end
+		end
+	end
+end
+
+local isExecutorCall = checkcaller or function()
+	return false
+end
+
+if hookmetamethod and getnamecallmethod and newcclosure then
+	pcall(function()
+		local oldNamecall
+		oldNamecall = hookmetamethod(game, "__namecall", newcclosure(function(self, ...)
+			local method = getnamecallmethod()
+			if not isExecutorCall() and not insideInternalRaycast then
+				if method == "InvokeServer" and self and ((ArrestPlayerRemote and self == ArrestPlayerRemote) or (typeof(self) == "Instance" and self.Name == "ArrestPlayer" and self:IsA("RemoteFunction"))) then
+					local args = table.pack(...)
+					local target = args[1]
+					local wasArrestedBefore = typeof(target) == "Instance" and target:IsA("Player") and ((target:GetAttribute("Arrested") == true) or (target.Character and target.Character:GetAttribute("Arrested") == true) or false)
+					local results = table.pack(oldNamecall(self, table.unpack(args, 1, args.n)))
+					task.defer(onArrestInvokeResult, true, results[1], results[2], target, wasArrestedBefore)
+					return table.unpack(results, 1, results.n)
+				end
+				local isShootRemote = method == "FireServer" and ShootEvent and self == ShootEvent
+				if method == "Raycast" and self == workspace then
+					local origin, dir, params = ...
+					if typeof(origin) == "Vector3" and typeof(dir) == "Vector3" and typeof(params) == "RaycastParams" and params.CollisionGroup == "ClientBullet" then
+						local adjustedOrigin = adjustInvisOrigin(origin)
+						local target = Config.SilentAim and cachedSilentTarget or nil
+						if target and target.Parent then
+							local offset = target.Position - adjustedOrigin
+							if offset.Magnitude > 0.01 then
+								local newDir = offset.Unit * dir.Magnitude
+								return oldNamecall(self, adjustedOrigin, newDir, params)
+							end
+						elseif adjustedOrigin ~= origin then
+							return oldNamecall(self, adjustedOrigin, dir, params)
+						end
+					end
+				end
+				if Config.SilentAim then
+					local target = cachedSilentTarget
+					if target and target.Parent and isShootRemote then
+						local args = table.pack(...)
+						local bullets = args[1]
+						if type(bullets) == "table" then
+							for i = 1, #bullets do
+								if type(bullets[i]) == "table" then
+									bullets[i][2] = target.Position
+									bullets[i][3] = target
+								end
+							end
+						end
+						local results = table.pack(oldNamecall(self, table.unpack(args, 1, args.n)))
+						if Config.HitSoundEnabled and type(bullets) == "table" then
+							task.defer(handleHitSoundFromBullets, bullets)
+						end
+						return table.unpack(results, 1, results.n)
+					end
+				end
+				if isShootRemote and Config.HitSoundEnabled then
+					local args = table.pack(...)
+					local bullets = args[1]
+					local results = table.pack(oldNamecall(self, table.unpack(args, 1, args.n)))
+					if type(bullets) == "table" then
+						task.defer(handleHitSoundFromBullets, bullets)
+					end
+					return table.unpack(results, 1, results.n)
+				end
+			end
+			return oldNamecall(self, ...)
+		end))
+	end)
+end
+
+local function escapeRichText(str)
+	return tostring(str):gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;")
+end
+
+local function clearPlayerESP()
+	for _, player in ipairs(Players:GetPlayers()) do
+		local char = player.Character
+		if char then
+			local head = char:FindFirstChild("Head")
+			if head then
+				local esp = head:FindFirstChild("StarCrowESP")
+				if esp then esp:Destroy() end
+			end
+			local chams = char:FindFirstChild("StarCrowChams")
+			if chams then chams:Destroy() end
+		end
+	end
+end
+
+local function updateESP()
+	if not Config.ESPEnabled then return end
+
+	for _, player in ipairs(Players:GetPlayers()) do
+		if player ~= LocalPlayer then
+			local char = player.Character
+			if char then
+				local hum = char:FindFirstChildOfClass("Humanoid")
+				local head = char:FindFirstChild("Head")
+				if hum and head then
+					local esp = head:FindFirstChild("StarCrowESP")
+					local chams = char:FindFirstChild("StarCrowChams")
+
+					if hum.Health > 0 then
+						if not esp then
+							esp = Instance.new("BillboardGui")
+							esp.Name = "StarCrowESP"
+							esp.Adornee = head
+							esp.Size = UDim2.new(0, 200, 0, 24)
+							esp.StudsOffset = Vector3.new(0, 2.2, 0)
+							esp.AlwaysOnTop = true
+							esp.MaxDistance = math.huge
+							local text = Instance.new("TextLabel")
+							text.Name = "NameText"
+							text.Parent = esp
+							text.Size = UDim2.new(1, 0, 1, 0)
+							text.BackgroundTransparency = 1
+							text.TextScaled = false
+							text.TextSize = 13
+							text.Font = Enum.Font.GothamBold
+							text.TextColor3 = Color3.fromRGB(255, 255, 255)
+							text.TextStrokeTransparency = 0
+							text.TextStrokeColor3 = Color3.fromRGB(0, 0, 0)
+							text.RichText = true
+							text.TextXAlignment = Enum.TextXAlignment.Center
+							esp.Parent = head
+						end
+
+						local teamColor = Color3.fromRGB(255, 255, 255)
+						if player.Team and player.Team.TeamColor then
+							teamColor = player.Team.TeamColor.Color
+						elseif player.TeamColor then
+							teamColor = player.TeamColor.Color
+						end
+						local teamHex = string.format("#%02x%02x%02x", math.floor(teamColor.R * 255), math.floor(teamColor.G * 255), math.floor(teamColor.B * 255))
+						local fullText = string.format('<font color="%s">%s</font>', teamHex, escapeRichText(player.DisplayName))
+						local targetSize = UDim2.new(0, 200, 0, 24)
+						if Config.ESPHPEnabled then
+							local maxHp = hum.MaxHealth > 0 and hum.MaxHealth or 100
+							local hpFrac = math.clamp(hum.Health / maxHp, 0, 1)
+							local hpColor = Color3.fromHSV(hpFrac * 0.33, 0.9, 1)
+							local hpHex = string.format("#%02x%02x%02x", math.floor(hpColor.R * 255), math.floor(hpColor.G * 255), math.floor(hpColor.B * 255))
+							local hpVal = math.max(1, math.floor(hum.Health + 0.5))
+							fullText = string.format('<font color="%s">%s</font>\n<font color="%s">%d HP</font>', teamHex, escapeRichText(player.DisplayName), hpHex, hpVal)
+							targetSize = UDim2.new(0, 200, 0, 34)
+						end
+
+						if esp.Size ~= targetSize then
+							esp.Size = targetSize
+						end
+						if esp.NameText.Text ~= fullText then
+							esp.NameText.Text = fullText
+						end
+
+						if not chams then
+							chams = Instance.new("Highlight")
+							chams.Name = "StarCrowChams"
+							chams.FillColor = teamColor
+							chams.OutlineColor = teamColor
+							chams.FillTransparency = 0.7
+							chams.OutlineTransparency = 0
+							chams.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+							chams.Parent = char
+						elseif chams.FillColor ~= teamColor then
+							chams.FillColor = teamColor
+							chams.OutlineColor = teamColor
+						end
+					else
+						if esp then esp:Destroy() end
+						if chams then chams:Destroy() end
+					end
+				end
+			end
+		end
+	end
+end
+
+local espThrottle = 0
+RunService.RenderStepped:Connect(function(dt)
+	Camera = workspace.CurrentCamera
+	if Config.SilentAim then
+		cachedSilentTarget = getSilentAimTargetPart()
+	else
+		cachedSilentTarget = nil
+	end
+
+	local showFOV = Config.SilentAim and Config.FOVMode == "FOV" and Camera ~= nil
+	local radius = tonumber(Config.FOVRadius) or 120
+	if showFOV then
+		local center = getAimReferencePoint(Camera)
+		if fovCircle then
+			fovCircle.Position = center
+			fovCircle.Radius = radius
+			fovCircle.Visible = true
+		elseif fovFrame then
+			fovFrame.Position = UDim2.fromOffset(center.X, center.Y)
+			fovFrame.Size = UDim2.fromOffset(radius * 2, radius * 2)
+			fovFrame.Visible = true
+		end
+	else
+		if fovCircle then
+			fovCircle.Visible = false
+		end
+		if fovFrame then
+			fovFrame.Visible = false
+		end
+	end
+
+	local arrestRem = arrestCooldownUntil - os.clock()
+	if Config.ArrestCooldown and arrestRem > 0 then
+		local ratio = math.clamp(arrestRem / math.max(arrestCooldownDuration, 0.1), 0, 1)
+		ArrestHUD.Fill.Size = UDim2.new(ratio, 0, 1, 0)
+		ArrestHUD.Label.Text = string.format("Arrest %.1fs", arrestRem)
+		ArrestHUD.Frame.Visible = true
+	else
+		ArrestHUD.Frame.Visible = false
+	end
+
+	if not Config.ESPEnabled then return end
+	espThrottle = espThrottle + dt
+	if espThrottle < 0.1 then return end
+	espThrottle = 0
+	updateESP()
+end)
+
+local disabledHeadConns = {}
+
+local function disableHeadCollisionSignal(char)
+	if not char or not getconnections then return end
+	local head = char:FindFirstChild("Head")
+	if not head then return end
+	pcall(function()
+		for _, conn in ipairs(getconnections(head:GetPropertyChangedSignal("CanCollide"))) do
+			if conn.Enabled ~= false then
+				conn:Disable()
+				table.insert(disabledHeadConns, conn)
+			end
+		end
+	end)
+end
+
+local function restoreHeadCollisionSignal()
+	for i = #disabledHeadConns, 1, -1 do
+		local conn = disabledHeadConns[i]
+		pcall(function()
+			if conn and conn.Enable then
+				conn:Enable()
+			end
+		end)
+		disabledHeadConns[i] = nil
+	end
+end
+
+local restorePartNames = {
+	Head = true,
+	Torso = true,
+	UpperTorso = true,
+	LowerTorso = true,
+	HumanoidRootPart = true,
+}
+
+local function setNoclipState(state)
+	local char = LocalPlayer.Character
+	if state then
+		if char then
+			disableHeadCollisionSignal(char)
+			for _, part in ipairs(char:GetDescendants()) do
+				if part:IsA("BasePart") and part.CanCollide then
+					part.CanCollide = false
+				end
+			end
+		end
+	else
+		restoreHeadCollisionSignal()
+		if char then
+			for _, part in ipairs(char:GetDescendants()) do
+				if part:IsA("BasePart") and restorePartNames[part.Name] then
+					part.CanCollide = true
+				end
+			end
+		end
+	end
+end
+
+local flyConnection = nil
+local jumpStateConnection = nil
+
+local function stopFly()
+	if jumpStateConnection then
+		jumpStateConnection:Disconnect()
+		jumpStateConnection = nil
+	end
+	if flyConnection then
+		flyConnection:Disconnect()
+		flyConnection = nil
+	end
+	local char = LocalPlayer.Character
+	if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	if humanoid then
+		humanoid.PlatformStand = false
+	end
+	if hrp then
+		for _, v in ipairs(hrp:GetChildren()) do
+			if v:IsA("BodyVelocity") or v:IsA("BodyGyro") then
+				v:Destroy()
+			end
+		end
+	end
+end
+
+local function startFly()
+	stopFly()
+	local char = LocalPlayer.Character
+	if not char then return end
+	local hrp = char:FindFirstChild("HumanoidRootPart")
+	local humanoid = char:FindFirstChildOfClass("Humanoid")
+	if not hrp or not humanoid then return end
+
+	humanoid.PlatformStand = true
+
+	local bv = Instance.new("BodyVelocity")
+	bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+	bv.Velocity = Vector3.zero
+	bv.Parent = hrp
+
+	local bg = Instance.new("BodyGyro")
+	bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+	bg.P = 1e7
+	bg.D = 12000
+	bg.CFrame = hrp.CFrame
+	bg.Parent = hrp
+
+	jumpStateConnection = humanoid.StateChanged:Connect(function(_, new)
+		if new == Enum.HumanoidStateType.Jumping or new == Enum.HumanoidStateType.Freefall then
+			humanoid.PlatformStand = true
+		end
+	end)
+
+	flyConnection = RunService.RenderStepped:Connect(function()
+		if not Config.FlyEnabled or not char.Parent or not hrp.Parent or humanoid.Health <= 0 then
+			stopFly()
+			return
+		end
+		local cam = workspace.CurrentCamera
+		if not cam then return end
+		local move = Vector3.zero
+		local md = humanoid.MoveDirection
+		if md.Magnitude > 0 then
+			local flatLook = Vector3.new(cam.CFrame.LookVector.X, 0, cam.CFrame.LookVector.Z)
+			local flatRight = Vector3.new(cam.CFrame.RightVector.X, 0, cam.CFrame.RightVector.Z)
+			if flatLook.Magnitude > 0.01 and flatRight.Magnitude > 0.01 then
+				local fwdAmt = md:Dot(flatLook.Unit)
+				local rightAmt = md:Dot(flatRight.Unit)
+				move = move + cam.CFrame.LookVector * fwdAmt
+				move = move + cam.CFrame.RightVector * rightAmt
+			end
+		end
+		if move.Magnitude > 0 then
+			move = move.Unit
+		end
+		local speed = math.clamp(tonumber(Config.FlySpeed) or 5, 1, 10)
+		bv.Velocity = move * speed * 50
+		bg.CFrame = CFrame.lookAt(hrp.Position, hrp.Position + cam.CFrame.LookVector, Vector3.new(0, 1, 0))
+	end)
+end
+
+local INVIS_BIND_NAME = "StarCrowInvisRestore"
+local invisHeartbeatConn = nil
+local invisBound = false
+
+local lastVehFlyModel = nil
+local lastVehFlyRoot = nil
+
+local VEH_BV_NAME = "StarCrowVehFlyBV"
+local VEH_BF_NAME = "StarCrowVehFlyBF"
+local VEH_BG_NAME = "StarCrowVehFlyBG"
+
+local autoGunCooldown = {}
+local autoGunSpawnWaitUntil = 0
+
+local function stopInvisible()
+	if invisBound then
+		pcall(function()
+			RunService:UnbindFromRenderStep(INVIS_BIND_NAME)
+		end)
+		invisBound = false
+	end
+	if invisHeartbeatConn then
+		invisHeartbeatConn:Disconnect()
+		invisHeartbeatConn = nil
+	end
+	restoreInvisRoot()
+	invisSavedCF = nil
+	invisSavedVel = nil
+end
+
+local function startInvisible()
+	stopInvisible()
+	RunService:BindToRenderStep(INVIS_BIND_NAME, Enum.RenderPriority.First.Value, function()
+		if not Config.InvisibleEnabled or invisPaused then
+			return
+		end
+		local char = LocalPlayer.Character
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if hrp and invisSavedCF and isAtUndergroundCF(hrp) then
+			hrp.CFrame = invisSavedCF
+			if invisSavedVel then
+				hrp.AssemblyLinearVelocity = invisSavedVel
+			end
+			hrp.AssemblyAngularVelocity = Vector3.zero
+		else
+			invisSavedCF = nil
+			invisSavedVel = nil
+		end
+		invisUndergroundCF = nil
+	end)
+	invisBound = true
+
+	invisHeartbeatConn = RunService.Heartbeat:Connect(function()
+		if not Config.InvisibleEnabled then
+			stopInvisible()
+			return
+		end
+		if invisPaused or os.clock() < invisSpawnReadyAt then
+			restoreInvisRoot()
+			invisSavedCF = nil
+			invisSavedVel = nil
+			return
+		end
+		local char = LocalPlayer.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if not char or not hum or hum.Health <= 0 or not hrp or hum.Sit or hum.SeatPart ~= nil then
+			restoreInvisRoot()
+			invisSavedCF = nil
+			invisSavedVel = nil
+			return
+		end
+		if isAtUndergroundCF(hrp) then
+			return
+		end
+		invisSavedCF = hrp.CFrame
+		invisSavedVel = hrp.AssemblyLinearVelocity
+		invisUndergroundCF = CFrame.new(invisSavedCF.Position + Vector3.new(0, -6, 0)) * invisSavedCF.Rotation * CFrame.Angles(math.rad(90), 0, 0)
+		hrp.CFrame = invisUndergroundCF
+	end)
+end
+
+local function removeVehicleFlyForces(container)
+	if not container then return end
+	for _, child in ipairs(container:GetChildren()) do
+		if (child:IsA("BodyVelocity") and child.Name == VEH_BV_NAME)
+			or (child:IsA("BodyForce") and child.Name == VEH_BF_NAME)
+			or (child:IsA("BodyGyro") and child.Name == VEH_BG_NAME) then
+			child:Destroy()
+		end
+	end
+end
+
+local function cleanupVehicleFly()
+	if lastVehFlyRoot then
+		removeVehicleFlyForces(lastVehFlyRoot)
+		lastVehFlyRoot = nil
+	end
+	if lastVehFlyModel then
+		pcall(function()
+			for _, p in ipairs(lastVehFlyModel:GetDescendants()) do
+				if (p:IsA("BodyVelocity") and p.Name == VEH_BV_NAME)
+					or (p:IsA("BodyForce") and p.Name == VEH_BF_NAME)
+					or (p:IsA("BodyGyro") and p.Name == VEH_BG_NAME) then
+					p:Destroy()
+				elseif p:IsA("BasePart") then
+					p.AssemblyLinearVelocity = Vector3.zero
+					p.AssemblyAngularVelocity = Vector3.zero
+				end
+			end
+		end)
+		lastVehFlyModel = nil
+	end
+end
+
+local function handleVehicleFly(seat, veh)
+	if not Config.VehicleFlyEnabled or not (seat and seat:IsA("VehicleSeat") and veh and veh ~= workspace) then
+		cleanupVehicleFly()
+		return
+	end
+
+	local root = seat.AssemblyRootPart or veh.PrimaryPart or seat
+	if lastVehFlyModel and (lastVehFlyModel ~= veh or lastVehFlyRoot ~= root) then
+		cleanupVehicleFly()
+	end
+
+	lastVehFlyModel = veh
+	lastVehFlyRoot = root
+
+	local cam = workspace.CurrentCamera
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+
+	local camCFrame = cam and cam.CFrame or root.CFrame
+	local camLook = camCFrame.LookVector
+	local fwdDir = camLook
+	local rightDir = camCFrame.RightVector
+
+	local speed = 300
+	local moveDir = Vector3.zero
+
+	local isMovingFwd = false
+	local isMovingBack = false
+	local isMovingLeft = false
+	local isMovingRight = false
+	local isMovingUp = false
+	local isMovingDown = false
+
+	if not UserInputService:GetFocusedTextBox() then
+		if UserInputService:IsKeyDown(Enum.KeyCode.W) or UserInputService:IsKeyDown(Enum.KeyCode.Up) then
+			isMovingFwd = true
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.S) or UserInputService:IsKeyDown(Enum.KeyCode.Down) then
+			isMovingBack = true
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.A) or UserInputService:IsKeyDown(Enum.KeyCode.Left) then
+			isMovingLeft = true
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.D) or UserInputService:IsKeyDown(Enum.KeyCode.Right) then
+			isMovingRight = true
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Space) or UserInputService:IsKeyDown(Enum.KeyCode.E) then
+			isMovingUp = true
+		end
+		if UserInputService:IsKeyDown(Enum.KeyCode.Q) then
+			isMovingDown = true
+		end
+	end
+
+	if seat.ThrottleFloat > 0.2 then
+		isMovingFwd = true
+	elseif seat.ThrottleFloat < -0.2 then
+		isMovingBack = true
+	end
+	if seat.SteerFloat > 0.2 then
+		isMovingRight = true
+	elseif seat.SteerFloat < -0.2 then
+		isMovingLeft = true
+	end
+
+	if hum and hum.MoveDirection.Magnitude > 0.1 then
+		local md = hum.MoveDirection
+		local flatFwd = Vector3.new(fwdDir.X, 0, fwdDir.Z)
+		if flatFwd.Magnitude > 0.001 then flatFwd = flatFwd.Unit end
+		local flatRight = Vector3.new(rightDir.X, 0, rightDir.Z)
+		if flatRight.Magnitude > 0.001 then flatRight = flatRight.Unit end
+
+		local fwdDot = md:Dot(flatFwd)
+		local rightDot = md:Dot(flatRight)
+		if fwdDot > 0.2 then isMovingFwd = true end
+		if fwdDot < -0.2 then isMovingBack = true end
+		if rightDot > 0.2 then isMovingRight = true end
+		if rightDot < -0.2 then isMovingLeft = true end
+	end
+
+	local pgui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+	if pgui then
+		local touchGui = pgui:FindFirstChild("TouchGui")
+		local tc = touchGui and touchGui:FindFirstChild("TouchControlFrame")
+		local jumpBtn = tc and tc:FindFirstChild("JumpButton")
+		if jumpBtn and jumpBtn.Visible and jumpBtn.ImageTransparency < 0.8 then
+			isMovingUp = true
+		end
+	end
+
+	if isMovingFwd then moveDir = moveDir + fwdDir end
+	if isMovingBack then moveDir = moveDir - fwdDir end
+	if isMovingRight then moveDir = moveDir + rightDir end
+	if isMovingLeft then moveDir = moveDir - rightDir end
+	if isMovingUp then moveDir = moveDir + Vector3.new(0, 1, 0) end
+	if isMovingDown then moveDir = moveDir - Vector3.new(0, 1, 0) end
+
+	local targetVel = Vector3.zero
+	if moveDir.Magnitude > 0.001 then
+		targetVel = moveDir.Unit * speed
+	end
+
+	local bf = root:FindFirstChild(VEH_BF_NAME)
+	if not bf or not bf:IsA("BodyForce") then
+		bf = Instance.new("BodyForce")
+		bf.Name = VEH_BF_NAME
+		bf.Parent = root
+	end
+	bf.Force = Vector3.new(0, root.AssemblyMass * workspace.Gravity, 0)
+
+	local bv = root:FindFirstChild(VEH_BV_NAME)
+	if not bv or not bv:IsA("BodyVelocity") then
+		bv = Instance.new("BodyVelocity")
+		bv.Name = VEH_BV_NAME
+		bv.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+		bv.P = 1e6
+		bv.Parent = root
+	end
+	bv.Velocity = targetVel
+
+	local bg = root:FindFirstChild(VEH_BG_NAME)
+	if not bg or not bg:IsA("BodyGyro") then
+		bg = Instance.new("BodyGyro")
+		bg.Name = VEH_BG_NAME
+		bg.MaxTorque = Vector3.new(9e9, 9e9, 9e9)
+		bg.P = 1e6
+		bg.D = 12000
+		bg.CFrame = root.CFrame
+		bg.Parent = root
+	end
+
+	local yawLook = Vector3.new(camLook.X, 0, camLook.Z)
+	if yawLook.Magnitude > 0.001 then
+		bg.CFrame = CFrame.lookAt(root.Position, root.Position + yawLook.Unit)
+	end
+
+	if moveDir.Magnitude <= 0.001 then
+		root.AssemblyLinearVelocity = Vector3.zero
+		for _, p in ipairs(veh:GetDescendants()) do
+			if p:IsA("BasePart") and p ~= root then
+				p.AssemblyLinearVelocity = Vector3.zero
+			end
+		end
+	end
+end
+
+LocalPlayer.CharacterAdded:Connect(function(char)
+	invisSavedCF = nil
+	invisSavedVel = nil
+	invisUndergroundCF = nil
+	invisSpawnReadyAt = os.clock() + 0.4
+	autoGunCooldown = {}
+	autoGunSpawnWaitUntil = os.clock() + 0.45
+	hookArrestAttributeTarget(char)
+	char.ChildAdded:Connect(function(child)
+		if child:IsA("Tool") and (child.Name == "Handcuffs" or child:GetAttribute("ToolType") == "Handcuffs" or child:GetAttribute("Behavior") == "Handcuffs") then
+			hookArrestAttributeTarget(child)
+		end
+	end)
+	if Config.NoclipEnabled then
+		task.spawn(function()
+			local head = char:WaitForChild("Head", 5)
+			if head and Config.NoclipEnabled then
+				task.wait(0.2)
+				if Config.NoclipEnabled then
+					disableHeadCollisionSignal(char)
+				end
+			end
+		end)
+	end
+	if Config.FlyEnabled then
+		task.spawn(function()
+			char:WaitForChild("HumanoidRootPart", 5)
+			char:WaitForChild("Humanoid", 5)
+			task.wait(0.25)
+			if Config.FlyEnabled and LocalPlayer.Character == char then
+				startFly()
+			end
+		end)
+	end
+end)
+
+if Config.FlyEnabled and LocalPlayer.Character then
+	task.defer(startFly)
+end
+
+if Config.InvisibleEnabled then
+	task.defer(startInvisible)
+end
+
+RunService.Stepped:Connect(function()
+	local char = LocalPlayer.Character
+	if not char then
+		cleanupVehicleFly()
+		return
+	end
+	if Config.NoclipEnabled then
+		for _, part in ipairs(char:GetDescendants()) do
+			if part:IsA("BasePart") and part.CanCollide then
+				part.CanCollide = false
+			end
+		end
+	end
+	local hum = char:FindFirstChildOfClass("Humanoid")
+	if hum and Config.LoopSpeedEnabled then
+		hum.WalkSpeed = math.clamp(tonumber(Config.WalkSpeed) or 30, 30, 100)
+	end
+	if hum and hum.Health > 0 and hum.SeatPart then
+		local seat = hum.SeatPart
+		local veh = seat:FindFirstAncestorWhichIsA("Model")
+		if veh and veh ~= workspace then
+			handleVehicleFly(seat, veh)
+		else
+			cleanupVehicleFly()
+		end
+	else
+		cleanupVehicleFly()
+	end
+end)
+
+UserInputService.JumpRequest:Connect(function()
+	if Config.InvisibleEnabled and not invisPaused then
+		restoreInvisRoot()
+	end
+	if Config.InfJumpEnabled then
+		local char = LocalPlayer.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if hum and hum.Health > 0 then
+			hum:ChangeState(Enum.HumanoidStateType.Jumping)
+		end
+	end
+end)
+
+UserInputService.InputBegan:Connect(function(input)
+	if not Config.InvisibleEnabled or invisPaused then return end
+	if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
+		restoreInvisRoot()
+	end
+end)
+
+local ItemSystem = {}
+do
+	local GiverPressedRemote = nil
+	local InteractWithItemRemote = nil
+	task.spawn(function()
+		local remotes = ReplicatedStorage:FindFirstChild("Remotes") or ReplicatedStorage:WaitForChild("Remotes", 15)
+		if remotes then
+			GiverPressedRemote = remotes:FindFirstChild("GiverPressed") or remotes:WaitForChild("GiverPressed", 15)
+			InteractWithItemRemote = remotes:FindFirstChild("InteractWithItem") or remotes:WaitForChild("InteractWithItem", 15)
+		end
+	end)
+
+	local fallbackGunNames = {
+		"AK-47",
+		"FAL",
+		"M4A1",
+		"M700",
+		"MP5",
+		"Remington 870",
+		"Revolver",
+	}
+
+	local excludedGuns = {
+		["M9"] = true,
+		["Taser"] = true,
+	}
+
+	local fallbackAllGunNames = {
+		"AK-47",
+		"FAL",
+		"M4A1",
+		"M700",
+		"M9",
+		"MP5",
+		"Remington 870",
+		"Revolver",
+		"Taser",
+	}
+
+	function ItemSystem.getGunList()
+		local seen = {}
+		local list = {}
+		local sharedMods = ReplicatedStorage:FindFirstChild("SharedModules")
+		local toolProps = sharedMods and sharedMods:FindFirstChild("ToolProperties")
+		if toolProps then
+			for _, mod in ipairs(toolProps:GetChildren()) do
+				if not excludedGuns[mod.Name] and not seen[mod.Name] then
+					seen[mod.Name] = true
+					table.insert(list, mod.Name)
+				end
+			end
+		end
+		for _, name in ipairs(fallbackGunNames) do
+			if not excludedGuns[name] and not seen[name] then
+				seen[name] = true
+				table.insert(list, name)
+			end
+		end
+		table.sort(list)
+		return list
+	end
+
+	function ItemSystem.getAllGunList()
+		local seen = {}
+		local list = {}
+		local sharedMods = ReplicatedStorage:FindFirstChild("SharedModules")
+		local toolProps = sharedMods and sharedMods:FindFirstChild("ToolProperties")
+		if toolProps then
+			for _, mod in ipairs(toolProps:GetChildren()) do
+				if not seen[mod.Name] then
+					seen[mod.Name] = true
+					table.insert(list, mod.Name)
+				end
+			end
+		end
+		for _, name in ipairs(fallbackAllGunNames) do
+			if not seen[name] then
+				seen[name] = true
+				table.insert(list, name)
+			end
+		end
+		table.sort(list)
+		return list
+	end
+
+	local function isGiverAllowedForTeam(giver)
+		if CollectionService:HasTag(giver, "Team_Any") or CollectionService:HasTag(giver, "Drop") then
+			return true
+		end
+		local teamName = LocalPlayer.Team and LocalPlayer.Team.Name
+		if teamName and CollectionService:HasTag(giver, "Team_" .. teamName) then
+			return true
+		end
+		return false
+	end
+
+	local function getGiverPart(obj)
+		if not obj then return nil end
+		if obj:IsA("BasePart") then return obj end
+		if obj:IsA("Model") and obj.PrimaryPart then return obj.PrimaryPart end
+		return obj:FindFirstChildWhichIsA("BasePart", true)
+	end
+
+	local function findGunGiver(gunName)
+		local fallbackObj, fallbackPart = nil, nil
+		for _, tagName in ipairs({"Giver", "TouchGiver"}) do
+			for _, obj in ipairs(CollectionService:GetTagged(tagName)) do
+				if obj:IsDescendantOf(workspace) then
+					local toolName = obj:GetAttribute("ToolName") or obj.Name
+					if toolName == gunName then
+						local part = getGiverPart(obj)
+						if part then
+							if isGiverAllowedForTeam(obj) then
+								return obj, part
+							elseif not fallbackObj then
+								fallbackObj, fallbackPart = obj, part
+							end
+						end
+					end
+				end
+			end
+		end
+		if fallbackObj and fallbackPart then
+			return fallbackObj, fallbackPart
+		end
+		for _, obj in ipairs(workspace:GetDescendants()) do
+			if (obj:IsA("Model") or obj:IsA("BasePart")) and ((obj:GetAttribute("ToolName") == gunName) or (obj.Name == gunName)) then
+				local pName = obj.Parent and obj.Parent.Name
+				if pName == "giver" or pName == "single" or obj:FindFirstChildWhichIsA("ClickDetector", true) or obj:FindFirstChildWhichIsA("ProximityPrompt", true) or obj:FindFirstChildWhichIsA("TouchTransmitter", true) then
+					local part = getGiverPart(obj)
+					if part then
+						return obj, part
+					end
+				end
+			end
+		end
+		return nil, nil
+	end
+
+	function ItemSystem.playerOwnsTool(gunName)
+		local char = LocalPlayer.Character
+		if char and char:FindFirstChild(gunName) then
+			return true
+		end
+		local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+		if bp and bp:FindFirstChild(gunName) then
+			return true
+		end
+		return false
+	end
+
+	local gettingGun = false
+	local AUTO_PICKUP_RANGE = 25
+	local dropPickupCooldown = setmetatable({}, { __mode = "k" })
+
+	function ItemSystem.isGettingGun()
+		return gettingGun
+	end
+
+	local function triggerItemInteraction(obj, part, hrp, allowDropRemote)
+		if not obj or not part or not hrp or not hrp.Parent then return end
+		local isDrop = allowDropRemote or CollectionService:HasTag(obj, "Drop")
+
+		if GiverPressedRemote and (CollectionService:HasTag(obj, "Giver") or CollectionService:HasTag(obj, "TouchGiver") or isDrop) then
+			pcall(function()
+				GiverPressedRemote:FireServer(obj)
+			end)
+		end
+
+		if firetouchinterest then
+			local touchParts = {}
+			for _, desc in ipairs(obj:GetDescendants()) do
+				if desc:IsA("TouchTransmitter") and desc.Parent and desc.Parent:IsA("BasePart") then
+					table.insert(touchParts, desc.Parent)
+				end
+			end
+			if #touchParts > 0 then
+				for _, tPart in ipairs(touchParts) do
+					pcall(function()
+						firetouchinterest(hrp, tPart, 0)
+						task.wait(0.02)
+						firetouchinterest(hrp, tPart, 1)
+					end)
+				end
+			elseif CollectionService:HasTag(obj, "TouchGiver") or obj:IsA("Tool") then
+				if obj:IsA("BasePart") then
+					pcall(function()
+						firetouchinterest(hrp, obj, 0)
+						task.wait(0.02)
+						firetouchinterest(hrp, obj, 1)
+					end)
+				elseif obj:IsA("Tool") and part:IsA("BasePart") then
+					pcall(function()
+						firetouchinterest(hrp, part, 0)
+						task.wait(0.02)
+						firetouchinterest(hrp, part, 1)
+					end)
+				else
+					for _, desc in ipairs(obj:GetDescendants()) do
+						if desc:IsA("BasePart") then
+							pcall(function()
+								firetouchinterest(hrp, desc, 0)
+								task.wait(0.02)
+								firetouchinterest(hrp, desc, 1)
+							end)
+						end
+					end
+				end
+			end
+		end
+
+		local pName = obj.Parent and obj.Parent.Name
+		if InteractWithItemRemote and (pName == "giver" or pName == "single" or isDrop) then
+			task.spawn(function()
+				pcall(function()
+					InteractWithItemRemote:InvokeServer(part)
+				end)
+			end)
+		end
+
+		if fireclickdetector then
+			local cd = obj:FindFirstChildWhichIsA("ClickDetector", true)
+			if cd then
+				pcall(function()
+					fireclickdetector(cd)
+				end)
+			end
+		end
+
+		if fireproximityprompt then
+			local pp = obj:FindFirstChildWhichIsA("ProximityPrompt", true)
+			if pp then
+				pcall(function()
+					fireproximityprompt(pp)
+				end)
+			end
+		end
+	end
+
+	local function isInsideAnyCharacter(obj)
+		local cur = obj and obj.Parent
+		while cur and cur ~= workspace do
+			if cur:IsA("Model") and Players:GetPlayerFromCharacter(cur) then
+				return true
+			end
+			cur = cur.Parent
+		end
+		return false
+	end
+
+	local function getDropItemName(obj)
+		if not obj then return "" end
+		local attrName = obj:GetAttribute("ToolName") or obj:GetAttribute("ItemName")
+		if type(attrName) == "string" and attrName ~= "" then
+			return attrName
+		end
+		return obj.Name or ""
+	end
+
+	local function tryPickupDroppedObject(obj, hrp, now)
+		if not obj or not obj:IsDescendantOf(workspace) then return end
+		if isInsideAnyCharacter(obj) then return end
+		local handle = obj:IsA("Tool") and obj:FindFirstChild("Handle")
+		local part = (handle and handle:IsA("BasePart")) and handle or getGiverPart(obj)
+		if not part or not part:IsA("BasePart") then return end
+		if (part.Position - hrp.Position).Magnitude > AUTO_PICKUP_RANGE then return end
+
+		local itemName = getDropItemName(obj)
+		if itemName ~= "" and itemName ~= "Drop" and ItemSystem.playerOwnsTool(itemName) then
+			return
+		end
+
+		local lastTry = dropPickupCooldown[obj]
+		if lastTry and (now - lastTry) < 0.75 then
+			return
+		end
+		dropPickupCooldown[obj] = now
+
+		task.spawn(triggerItemInteraction, obj, part, hrp, true)
+	end
+
+	function ItemSystem.scanAndPickupDroppedItems()
+		if not Config.AutoPickupItems then return end
+		local char = LocalPlayer.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if not char or not hum or hum.Health <= 0 or not hrp then return end
+
+		local now = os.clock()
+		local seen = {}
+
+		for _, obj in ipairs(CollectionService:GetTagged("Drop")) do
+			if not seen[obj] then
+				seen[obj] = true
+				tryPickupDroppedObject(obj, hrp, now)
+			end
+		end
+
+		for _, child in ipairs(workspace:GetChildren()) do
+			if child:IsA("Tool") then
+				if not seen[child] then
+					seen[child] = true
+					tryPickupDroppedObject(child, hrp, now)
+				end
+			elseif (child:IsA("Folder") or child:IsA("Model")) and child.Name:lower():find("drop") then
+				for _, item in ipairs(child:GetChildren()) do
+					if not seen[item] then
+						seen[item] = true
+						tryPickupDroppedObject(item, hrp, now)
+					end
+				end
+			elseif (child:IsA("Model") or child:IsA("BasePart")) and (child:GetAttribute("Dropped") == true or child:GetAttribute("IsDrop") == true) then
+				if not seen[child] then
+					seen[child] = true
+					tryPickupDroppedObject(child, hrp, now)
+				end
+			end
+		end
+	end
+
+	CollectionService:GetInstanceAddedSignal("Drop"):Connect(function(obj)
+		if not Config.AutoPickupItems then return end
+		task.defer(function()
+			if not Config.AutoPickupItems then return end
+			local char = LocalPlayer.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			if char and hum and hum.Health > 0 and hrp then
+				tryPickupDroppedObject(obj, hrp, os.clock())
+			end
+		end)
+	end)
+
+	task.spawn(function()
+		while true do
+			if Config.AutoPickupItems then
+				pcall(ItemSystem.scanAndPickupDroppedItems)
+				task.wait(0.18)
+			else
+				task.wait(0.4)
+			end
+		end
+	end)
+
+	function ItemSystem.getGunsAndReturn(gunSelection, silentMode)
+		if gettingGun then return end
+		local gunList = {}
+		if type(gunSelection) == "string" then
+			table.insert(gunList, gunSelection)
+		elseif type(gunSelection) == "table" then
+			for _, name in ipairs(gunSelection) do
+				table.insert(gunList, name)
+			end
+		end
+		if #gunList == 0 then
+			if not silentMode then
+				notify("Get Gun", "No gun selected", "Warning")
+			end
+			return
+		end
+		gettingGun = true
+		local wasInvisPaused = invisPaused
+		invisPaused = true
+		local ok, err = pcall(function()
+			local char = LocalPlayer.Character
+			local hum = char and char:FindFirstChildOfClass("Humanoid")
+			local hrp = char and char:FindFirstChild("HumanoidRootPart")
+			if not char or not hum or hum.Health <= 0 or not hrp then return end
+
+			restoreInvisRoot()
+			local savedCFrame = hrp.CFrame
+
+			for _, gunName in ipairs(gunList) do
+				if not hrp.Parent or hum.Health <= 0 then break end
+				if not (silentMode and ItemSystem.playerOwnsTool(gunName)) then
+					local giver, part = findGunGiver(gunName)
+					if not giver or not part then
+						if not silentMode then
+							notify("Get Gun", "Gun not found: " .. tostring(gunName), "Warning")
+						end
+					else
+						local hadBefore = ItemSystem.playerOwnsTool(gunName)
+						hrp.CFrame = CFrame.new(part.Position + Vector3.new(0, 2.5, 0))
+						hrp.AssemblyLinearVelocity = Vector3.zero
+						task.wait(0.15)
+
+						for _ = 1, 2 do
+							if not hrp.Parent or hum.Health <= 0 then break end
+							hrp.CFrame = CFrame.new(part.Position + Vector3.new(0, 2.5, 0))
+							hrp.AssemblyLinearVelocity = Vector3.zero
+
+							triggerItemInteraction(giver, part, hrp, false)
+
+							task.wait(0.18)
+							if not hadBefore and ItemSystem.playerOwnsTool(gunName) then
+								break
+							end
+						end
+					end
+				end
+			end
+
+			if hrp and hrp.Parent then
+				hrp.CFrame = savedCFrame
+				hrp.AssemblyLinearVelocity = Vector3.zero
+			end
+
+			if Config.FastFire or Config.NoSpread then
+				task.defer(applyGunMods)
+			end
+		end)
+		invisPaused = wasInvisPaused
+		gettingGun = false
+		if not ok and err then
+			warn(err)
+		end
+	end
+end
+
+local pendingArrest = {}
+local arrestCooldown = {}
+
+if LocalPlayer.Character then
+	hookArrestAttributeTarget(LocalPlayer.Character)
+end
+do
+	local initialCuffs = findHandcuffsTool()
+	if initialCuffs then
+		hookArrestAttributeTarget(initialCuffs)
+	end
+end
+LocalPlayer.ChildAdded:Connect(function(child)
+	if child:IsA("Backpack") then
+		child.ChildAdded:Connect(function(tool)
+			if tool:IsA("Tool") and (tool.Name == "Handcuffs" or tool:GetAttribute("ToolType") == "Handcuffs" or tool:GetAttribute("Behavior") == "Handcuffs") then
+				hookArrestAttributeTarget(tool)
+			end
+		end)
+	end
+end)
+do
+	local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+	if bp then
+		bp.ChildAdded:Connect(function(tool)
+			if tool:IsA("Tool") and (tool.Name == "Handcuffs" or tool:GetAttribute("ToolType") == "Handcuffs" or tool:GetAttribute("Behavior") == "Handcuffs") then
+				hookArrestAttributeTarget(tool)
+			end
+		end)
+	end
+end
+
+Players.PlayerRemoving:Connect(function(player)
+	pendingArrest[player] = nil
+	arrestCooldown[player] = nil
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(0.15)
+		if Config.AutoArrest and ArrestPlayerRemote then
+			local myChar = LocalPlayer.Character
+			local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+			local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+			if myHum and myHum.Health > 0 and myHrp then
+				local now = os.clock()
+				local candidates = {}
+				for _, player in ipairs(Players:GetPlayers()) do
+					if player ~= LocalPlayer and not isSameTeam(player) then
+						if player.Team and player.Team.Name ~= "Neutral" then
+							if not pendingArrest[player] and now - (arrestCooldown[player] or 0) >= 0.45 then
+								local tChar = player.Character
+								local tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
+								local tHrp = tChar and (tChar:FindFirstChild("HumanoidRootPart") or tChar:FindFirstChild("Torso") or tChar:FindFirstChild("UpperTorso"))
+								if tHum and tHum.Health > 0 and tHrp then
+									if not player:GetAttribute("Arrested") and not tChar:GetAttribute("Arrested") then
+										table.insert(candidates, {
+											player = player,
+											dist = (myHrp.Position - tHrp.Position).Magnitude
+										})
+									end
+								end
+							end
+						end
+					end
+				end
+				table.sort(candidates, function(a, b)
+					return a.dist < b.dist
+				end)
+				local limit = math.min(#candidates, 3)
+				for i = 1, limit do
+					local target = candidates[i].player
+					pendingArrest[target] = true
+					task.spawn(function()
+						local tCharBefore = target.Character
+						local wasArrestedBefore = (target:GetAttribute("Arrested") == true) or (tCharBefore and tCharBefore:GetAttribute("Arrested") == true) or false
+						local invokeOk, r1, r2 = pcall(function()
+							return ArrestPlayerRemote:InvokeServer(target, 1)
+						end)
+						onArrestInvokeResult(invokeOk, r1, r2, target, wasArrestedBefore)
+						arrestCooldown[target] = os.clock()
+						pendingArrest[target] = nil
+					end)
+				end
+			end
+		end
+	end
+end)
+
+local MeleeEvent = nil
+task.spawn(function()
+	MeleeEvent = ReplicatedStorage:FindFirstChild("meleeEvent") or ReplicatedStorage:WaitForChild("meleeEvent", 15)
+end)
+
+task.spawn(function()
+	while true do
+		task.wait(0.12)
+		if Config.MeleeAura and MeleeEvent then
+			local myChar = LocalPlayer.Character
+			local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+			local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+			if myHum and myHum.Health > 0 and myHrp then
+				local maxRange = 30
+				for _, player in ipairs(Players:GetPlayers()) do
+					if player ~= LocalPlayer and LocalPlayer.TeamColor ~= player.TeamColor and not isSameTeam(player) then
+						if not player.Team or player.Team.Name ~= "Neutral" then
+							if not (Config.FriendCheck and friendCache[player.UserId]) then
+								local tChar = player.Character
+								local tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
+								local tHrp = tChar and (tChar:FindFirstChild("HumanoidRootPart") or tChar:FindFirstChild("Torso") or tChar:FindFirstChild("UpperTorso"))
+								if tHum and tHum.Health > 0 and tHrp then
+									if (myHrp.Position - tHrp.Position).Magnitude <= maxRange then
+										pcall(function()
+											MeleeEvent:FireServer(player, 1, 1)
+										end)
+									end
+								end
+							end
+						end
+					end
+				end
+			end
+		end
+	end
+end)
+
+local function resolveKeyCode(value, fallback)
+	if typeof(value) == "EnumItem" and value.EnumType == Enum.KeyCode then
+		if value ~= Enum.KeyCode.Unknown then
+			return value
+		end
+		return fallback
+	end
+	local name = tostring(value or ""):gsub("Enum%.KeyCode%.", "")
+	local resolved = Enum.KeyCode[name]
+	if resolved and resolved ~= Enum.KeyCode.Unknown then
+		return resolved
+	end
+	return fallback
+end
+
+local flyKey = resolveKeyCode(Config.FlyKey, Enum.KeyCode.F)
+local noclipKey = resolveKeyCode(Config.NoclipKey, Enum.KeyCode.J)
+
+local function setFlyEnabled(value)
+	Config.FlyEnabled = value
+	if value then
+		startFly()
+	else
+		stopFly()
+	end
+	SaveConfig()
+end
+
+local function setNoclipEnabled(value)
+	Config.NoclipEnabled = value
+	setNoclipState(value)
+	SaveConfig()
+end
+
+local function setInvisibleEnabled(value)
+	Config.InvisibleEnabled = value
+	if value then
+		startInvisible()
+	else
+		stopInvisible()
+	end
+	SaveConfig()
+end
+
+local function setVehicleFlyEnabled(value)
+	Config.VehicleFlyEnabled = value
+	if not value then
+		cleanupVehicleFly()
+	end
+	SaveConfig()
+end
+
+-- สลับสถานะด้วย keybind แล้วอัปเดตหน้าตา toggle ให้ตรงกัน
+local function toggleFeatureWithToggle(toggleHandle, getStateFn, applyFn)
+	local nextState = not getStateFn()
+	applyFn(nextState)
+	if toggleHandle then
+		toggleHandle.set(nextState)
+	end
+end
+
+-- สร้างหน้าต่าง UI (Library แบบ mm2)
+Library = loadLibrary()
+
+local Window = Library:Window({
+	Name = "128B!t Hub X",
+	SubName = "Prison Life",
+	Logo = LOGO_ID,
+	UIMode = "Mobile",
+	Background = BACKGROUND_ID,
+	PanelTransparency = 0.5,
+	ElementTransparency = 0.55,
+})
+
+Library:Watermark("128B!t Hub X", LOGO_ID)
+
+-- สร้างหน้า (ถ้า Library ไม่รู้จักชื่อไอคอน จะสร้างแบบไม่มีไอคอนแทน)
+local function addPage(name, icon)
+	local success, page = pcall(function()
+		return Window:Page({ Name = name, Icon = icon })
+	end)
+	if success and page then
+		return page
+	end
+	return Window:Page({ Name = name })
+end
+
+local Tabs = {
+	Main = addPage("Main", "home"),
+	Combat = addPage("Combat", "crosshair"),
+	Player = addPage("Player", "user"),
+	ESP = addPage("ESP", "eye"),
+	Teleport = addPage("Teleport", "map-pin"),
+	Misc = addPage("Misc", "wrench"),
+	Settings = addPage("Settings", "settings"),
+}
+
+-- คำอธิบายภาษาไทยของแต่ละ element (key = Flag) แก้ข้อความได้ที่นี่ที่เดียว
+local Descriptions = {
+	-- Main
+	AutoArrestToggle = "จับกุมอัตโนมัติ",
+	ArrestCooldownToggle = "แสดงตัวนับคูลดาวน์การจับกุม",
+	ArrestTargetDropdown = "เลือกผู้เล่นที่จะจับกุม",
+	-- Combat
+	FastFireToggle = "ยิงเร็วขึ้น",
+	NoSpreadToggle = "กระสุนไม่กระจาย",
+	AutoSwitchReloadToggle = "กระสุนหมดสลับปืนอัตโนมัติ",
+	SwitchReloadGunsDropdown = "เลือกปืนที่ใช้สลับรีโหลด",
+	SilentAimToggle = "ช่วยยิง",
+	FOVModeDropdown = "เลือกโหมดวง FOV",
+	FOVSizeSlider = "ปรับขนาดวง FOV",
+	TargetPartDropdown = "เลือกจุดที่เล็ง",
+	FriendCheckToggle = "ไม่เล็งและไม่ตีเพื่อน",
+	WallCheckToggle = "ไม่เล็งคนหลังกำแพง",
+	IgnoreTeamsDropdown = "เลือกทีมที่ไม่ต้องเล็ง",
+	MeleeAuraToggle = "ตีศัตรูใกล้ตัวอัตโนมัติ",
+	-- Player
+	LoopSpeedToggle = "เปิดใช้ความเร็วการเดิน",
+	WalkSpeedSlider = "ปรับความเร็วการเดิน",
+	InfJumpToggle = "กระโดดได้ไม่จำกัด",
+	FlyToggle = "บินได้",
+	FlySpeedSlider = "ปรับความเร็วการบิน",
+	NoclipToggle = "ทะลุกำแพง",
+	InvisibleToggle = "ล่องหน",
+	-- ESP
+	ESPPlayersToggle = "แสดงตำแหน่งผู้เล่น",
+	ESPHPToggle = "แสดงเลือดผู้เล่น",
+	-- Teleport
+	TeleportPlayerDropdown = "เลือกผู้เล่นที่จะวาร์ปไปหา",
+	-- Misc
+	SelectGunDropdown = "เลือกปืนที่ต้องการรับ",
+	AutoGetGunToggle = "รับปืนที่เลือกอัตโนมัติ",
+	VehicleFlyToggle = "บินด้วยยานพาหนะ",
+	AutoPickupToggle = "เก็บไอเทมที่ตกอัตโนมัติ",
+	PurpleTracerToggle = "เส้นกระสุนสีม่วง",
+	CustomGunSoundToggle = "เปลี่ยนเสียงปืน",
+	HitSoundToggle = "มีเสียงเมื่อยิงโดน",
+	-- Settings
+	DisableKeybindsToggle = "ปิดปุ่มลัดทั้งหมด",
+}
+
+-- ตัวช่วยสร้าง element (toggle คืน handle ไว้ซิงก์หน้าตาจาก keybind)
+local function addToggle(section, flag, name, default, callback)
+	local silent = false
+	local element = section:Toggle({
+		Name = name,
+		Flag = flag,
+		Desc = Descriptions[flag] or "",
+		Default = default or false,
+		Callback = function(value)
+			if silent then return end
+			callback(value)
+		end,
+	})
+	return {
+		set = function(value)
+			silent = true
+			setToggleVisual(element, value)
+			task.defer(function()
+				silent = false
+			end)
+		end,
+	}
+end
+
+local function addSlider(section, flag, name, default, min, max, callback)
+	section:Slider({
+		Name = name,
+		Flag = flag,
+		Desc = Descriptions[flag] or "",
+		Default = default,
+		Min = min,
+		Max = max,
+		Suffix = "",
+		Callback = callback,
+	})
+end
+
+local function addDropdown(section, flag, name, items, default, callback)
+	return section:Dropdown({
+		Name = name,
+		Flag = flag,
+		Desc = Descriptions[flag] or "",
+		Items = items,
+		Default = default,
+		Multi = false,
+		Callback = callback,
+	})
+end
+
+-- กัน callback ตอนสร้าง dropdown แบบเลือกหลายตัว ไม่ให้ทับค่าที่เซฟไว้
+local ignoreDropdownUntil = 0
+
+local function addSavedMultiDropdown(section, id, title, valuesList, configKey, excludedKey)
+	local initial = {}
+	local saved = Config[configKey]
+	if type(saved) == "table" then
+		for _, name in ipairs(valuesList) do
+			if saved[name] == true and name ~= excludedKey then
+				table.insert(initial, name)
+			end
+		end
+	end
+	ignoreDropdownUntil = os.clock() + 1.5
+	return section:Dropdown({
+		Name = title,
+		Flag = id,
+		Desc = Descriptions[id] or "",
+		Items = valuesList,
+		Default = initial,
+		Multi = true,
+		Callback = function(value)
+			if os.clock() < ignoreDropdownUntil then return end
+			Config[configKey] = sanitizeStringBoolMap(value, excludedKey)
+			SaveConfig()
+		end,
+	})
+end
+
+local FlyToggle = nil
+local NoclipToggle = nil
+
+local PlayerTarget = {
+	selectedArrestTargetName = nil,
+	selectedTeleportPlayerName = nil,
+	ArrestTargetDropdown = nil,
+	TeleportPlayerDropdown = nil,
+	isTargetArresting = false,
+	arrestDropdownCache = {},
+	teleportDropdownCache = {},
+	playerTeamConns = {},
+	dropdownRefreshQueued = false,
+}
+
+do
+	local function stringListsEqual(a, b)
+		if type(a) ~= "table" or type(b) ~= "table" or #a ~= #b then
+			return false
+		end
+		for i = 1, #a do
+			if a[i] ~= b[i] then
+				return false
+			end
+		end
+		return true
+	end
+
+	local function syncSinglePlayerDropdown(dd, values, cacheRef, selectedName)
+		if not dd then return selectedName end
+		if not stringListsEqual(cacheRef.values, values) then
+			cacheRef.values = values
+			if dd.Refresh then
+				pcall(function()
+					dd:Refresh(values)
+				end)
+			end
+		end
+		if selectedName and not table.find(values, selectedName) then
+			selectedName = nil
+		end
+		return selectedName
+	end
+
+	function PlayerTarget.getFilteredPlayerLists()
+		local allNames = {}
+		local arrestNames = {}
+		for _, player in ipairs(Players:GetPlayers()) do
+			if player ~= LocalPlayer and player.Parent == Players then
+				table.insert(allNames, player.Name)
+				local teamName = player.Team and player.Team.Name
+				if teamName == "Inmates" or teamName == "Criminals" then
+					table.insert(arrestNames, player.Name)
+				end
+			end
+		end
+		table.sort(allNames)
+		table.sort(arrestNames)
+		return allNames, arrestNames
+	end
+
+	function PlayerTarget.refreshPlayerDropdowns()
+		local allNames, arrestNames = PlayerTarget.getFilteredPlayerLists()
+		PlayerTarget.selectedArrestTargetName = syncSinglePlayerDropdown(PlayerTarget.ArrestTargetDropdown, arrestNames, PlayerTarget.arrestDropdownCache, PlayerTarget.selectedArrestTargetName)
+		PlayerTarget.selectedTeleportPlayerName = syncSinglePlayerDropdown(PlayerTarget.TeleportPlayerDropdown, allNames, PlayerTarget.teleportDropdownCache, PlayerTarget.selectedTeleportPlayerName)
+	end
+
+	function PlayerTarget.schedulePlayerDropdownRefresh()
+		if PlayerTarget.dropdownRefreshQueued then return end
+		PlayerTarget.dropdownRefreshQueued = true
+		task.delay(0.15, function()
+			PlayerTarget.dropdownRefreshQueued = false
+			PlayerTarget.refreshPlayerDropdowns()
+		end)
+	end
+
+	function PlayerTarget.bindPlayerTeamListener(player)
+		if not player or player == LocalPlayer or PlayerTarget.playerTeamConns[player] then return end
+		PlayerTarget.playerTeamConns[player] = player:GetPropertyChangedSignal("Team"):Connect(PlayerTarget.schedulePlayerDropdownRefresh)
+	end
+
+	function PlayerTarget.arrestTargetPlayer()
+		if PlayerTarget.isTargetArresting then
+			notify("Target Arrest", "Already targeting a player", "Warning")
+			return
+		end
+		local target = PlayerTarget.selectedArrestTargetName and Players:FindFirstChild(PlayerTarget.selectedArrestTargetName)
+		if not target or target == LocalPlayer then
+			notify("Target Arrest", "Select a valid player", "Warning")
+			return
+		end
+		local tTeamName = target.Team and target.Team.Name
+		if tTeamName ~= "Inmates" and tTeamName ~= "Criminals" then
+			notify("Target Arrest", "Target must be Inmates or Criminals", "Warning")
+			return
+		end
+		if not ArrestPlayerRemote then
+			notify("Target Arrest", "Arrest remote unavailable", "Error")
+			return
+		end
+		local tChar = target.Character
+		local tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
+		local tHrp = tChar and (tChar:FindFirstChild("HumanoidRootPart") or tChar:FindFirstChild("Torso") or tChar:FindFirstChild("UpperTorso"))
+		if not tChar or not tHum or tHum.Health <= 0 or not tHrp then
+			notify("Target Arrest", "Target player not alive", "Warning")
+			return
+		end
+		if target:GetAttribute("Arrested") or tChar:GetAttribute("Arrested") then
+			notify("Target Arrest", "Target already arrested", "Warning")
+			return
+		end
+
+		local char = LocalPlayer.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if not char or not hum or hum.Health <= 0 or not hrp then
+			return
+		end
+
+		PlayerTarget.isTargetArresting = true
+		local wasInvisPaused = invisPaused
+		local wasFlyEnabled = Config.FlyEnabled
+		invisPaused = true
+		restoreInvisRoot()
+		invisSavedCF = nil
+		invisSavedVel = nil
+		invisUndergroundCF = nil
+
+		local savedCFrame = hrp.CFrame
+		local noclipConn = nil
+		local followConn = nil
+		local didTeleport = false
+		local arrested = false
+
+		local ok, err = pcall(function()
+			if wasFlyEnabled then
+				stopFly()
+			end
+			if hum.Sit then
+				hum.Sit = false
+				task.wait(0.05)
+			end
+			if not hrp.Parent or hum.Health <= 0 then
+				return
+			end
+
+			savedCFrame = hrp.CFrame
+			didTeleport = true
+			hum.PlatformStand = true
+			disableHeadCollisionSignal(char)
+
+			local charParts = {}
+			for _, part in ipairs(char:GetDescendants()) do
+				if part:IsA("BasePart") then
+					table.insert(charParts, part)
+				end
+			end
+
+			noclipConn = RunService.Stepped:Connect(function()
+				for _, part in ipairs(charParts) do
+					if part.Parent and part.CanCollide then
+						part.CanCollide = false
+					end
+				end
+			end)
+
+			local cachedTChar = tChar
+			local cachedTHrp = tHrp
+
+			followConn = RunService.Heartbeat:Connect(function()
+				if target.Parent ~= Players or not hrp.Parent then return end
+				local curTChar = target.Character
+				if curTChar ~= cachedTChar then
+					cachedTChar = curTChar
+					cachedTHrp = curTChar and (curTChar:FindFirstChild("HumanoidRootPart") or curTChar:FindFirstChild("Torso") or curTChar:FindFirstChild("UpperTorso")) or nil
+				elseif cachedTHrp and not cachedTHrp.Parent then
+					cachedTHrp = curTChar and (curTChar:FindFirstChild("HumanoidRootPart") or curTChar:FindFirstChild("Torso") or curTChar:FindFirstChild("UpperTorso")) or nil
+				end
+				if cachedTHrp then
+					hrp.AssemblyLinearVelocity = Vector3.zero
+					hrp.AssemblyAngularVelocity = Vector3.zero
+					hrp.CFrame = CFrame.new(cachedTHrp.Position + Vector3.new(0, -6, 0))
+				end
+			end)
+
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.AssemblyAngularVelocity = Vector3.zero
+			hrp.CFrame = CFrame.new(tHrp.Position + Vector3.new(0, -6, 0))
+
+			local deadline = os.clock() + 5
+
+			while os.clock() < deadline do
+				if target.Parent ~= Players then break end
+				if not char.Parent or not hrp.Parent or hum.Health <= 0 then break end
+				local curTeamName = target.Team and target.Team.Name
+				if curTeamName ~= "Inmates" and curTeamName ~= "Criminals" then
+					break
+				end
+				local curTChar = target.Character
+				local curTHum = curTChar and curTChar:FindFirstChildOfClass("Humanoid")
+				if not curTChar or not curTHum or curTHum.Health <= 0 then
+					break
+				end
+				if target:GetAttribute("Arrested") == true or curTChar:GetAttribute("Arrested") == true then
+					arrested = true
+					break
+				end
+
+				local invokeOk, r1, r2 = pcall(function()
+					return ArrestPlayerRemote:InvokeServer(target, 1)
+				end)
+				onArrestInvokeResult(invokeOk, r1, r2, target, false)
+				if (invokeOk and r1 == true) or target:GetAttribute("Arrested") == true or curTChar:GetAttribute("Arrested") == true then
+					arrested = true
+					break
+				end
+				task.wait(0.28)
+			end
+		end)
+
+		if followConn then
+			followConn:Disconnect()
+			followConn = nil
+		end
+		if noclipConn then
+			noclipConn:Disconnect()
+			noclipConn = nil
+		end
+
+		setNoclipState(Config.NoclipEnabled)
+		if hum.Parent then
+			hum.PlatformStand = false
+		end
+		if didTeleport and hrp.Parent and hum.Parent and hum.Health > 0 then
+			hrp.AssemblyLinearVelocity = Vector3.zero
+			hrp.AssemblyAngularVelocity = Vector3.zero
+			hrp.CFrame = savedCFrame
+		end
+		if wasFlyEnabled and Config.FlyEnabled and LocalPlayer.Character == char and hum.Parent and hum.Health > 0 then
+			startFly()
+		end
+
+		invisPaused = wasInvisPaused
+		PlayerTarget.isTargetArresting = false
+
+		if ok and arrested then
+			notify("Target Arrest", "Arrested " .. target.Name, "Success")
+		elseif not ok and err then
+			warn(err)
+		end
+	end
+end
+
+-- Main
+local arrestSection = Tabs.Main:Section({ Name = "Arrest", Side = 1 })
+
+addToggle(arrestSection, "AutoArrestToggle", "Auto Arrest", Config.AutoArrest, function(Value)
+	Config.AutoArrest = Value
+	SaveConfig()
+end)
+
+addToggle(arrestSection, "ArrestCooldownToggle", "Arrest Cooldown", Config.ArrestCooldown, function(Value)
+	Config.ArrestCooldown = Value
+	if not Value then
+		ArrestHUD.Frame.Visible = false
+	end
+	SaveConfig()
+end)
+
+do
+	local initAllPlayers, initArrestPlayers = PlayerTarget.getFilteredPlayerLists()
+	PlayerTarget.teleportDropdownCache.values = initAllPlayers
+	PlayerTarget.arrestDropdownCache.values = initArrestPlayers
+
+	PlayerTarget.ArrestTargetDropdown = addDropdown(arrestSection, "ArrestTargetDropdown", "Arrest Player", initArrestPlayers, "", function(Value)
+		PlayerTarget.selectedArrestTargetName = Value
+	end)
+end
+
+arrestSection:Button({
+	Name = "Target",
+	Desc = "จับกุมผู้เล่นที่เลือก",
+	Callback = function()
+		task.spawn(PlayerTarget.arrestTargetPlayer)
+	end,
+})
+
+-- Combat
+local gunModSection = Tabs.Combat:Section({ Name = "Gun Mod", Side = 1 })
+
+addToggle(gunModSection, "FastFireToggle", "Fast Fire", Config.FastFire, function(Value)
+	Config.FastFire = Value
+	applyGunMods()
+	SaveConfig()
+end)
+
+addToggle(gunModSection, "NoSpreadToggle", "No Spread", Config.NoSpread, function(Value)
+	Config.NoSpread = Value
+	applyGunMods()
+	SaveConfig()
+end)
+
+addToggle(gunModSection, "AutoSwitchReloadToggle", "Auto Switch Reload", Config.AutoSwitchReload, function(Value)
+	Config.AutoSwitchReload = Value
+	SaveConfig()
+end)
+
+do
+	local allGunValues = ItemSystem.getAllGunList()
+	if not hasSavedSwitchReloadGuns then
+		for _, gName in ipairs(allGunValues) do
+			if gName ~= "Taser" then
+				Config.SwitchReloadGuns[gName] = true
+			end
+		end
+	end
+	addSavedMultiDropdown(gunModSection, "SwitchReloadGunsDropdown", "Switch Reload", allGunValues, "SwitchReloadGuns", nil)
+end
+
+local silentAimSection = Tabs.Combat:Section({ Name = "Silent Aim", Side = 2 })
+
+addToggle(silentAimSection, "SilentAimToggle", "Silent Aim", Config.SilentAim, function(Value)
+	Config.SilentAim = Value
+	SaveConfig()
+end)
+
+addDropdown(silentAimSection, "FOVModeDropdown", "FOV Mode", { "No FOV", "FOV" }, Config.FOVMode or "No FOV", function(Value)
+	Config.FOVMode = Value or "No FOV"
+	SaveConfig()
+end)
+
+addSlider(silentAimSection, "FOVSizeSlider", "FOV Size", Config.FOVRadius or 120, 20, 500, function(Value)
+	Config.FOVRadius = Value
+	SaveConfig()
+end)
+
+addDropdown(silentAimSection, "TargetPartDropdown", "Target Part", { "Head", "Body" }, Config.AimPart or "Head", function(Value)
+	Config.AimPart = Value or "Head"
+	SaveConfig()
+end)
+
+addToggle(silentAimSection, "FriendCheckToggle", "Friend Check", Config.FriendCheck, function(Value)
+	Config.FriendCheck = Value
+	SaveConfig()
+end)
+
+addToggle(silentAimSection, "WallCheckToggle", "Wall Check", Config.WallCheck, function(Value)
+	Config.WallCheck = Value
+	SaveConfig()
+end)
+
+do
+	local teamValues = {}
+	local seenTeams = {}
+	for _, team in ipairs(Teams:GetTeams()) do
+		if team.Name ~= "Neutral" and not seenTeams[team.Name] then
+			seenTeams[team.Name] = true
+			table.insert(teamValues, team.Name)
+		end
+	end
+	for _, fallbackName in ipairs({"Guards", "Inmates", "Criminals"}) do
+		if not seenTeams[fallbackName] then
+			seenTeams[fallbackName] = true
+			table.insert(teamValues, fallbackName)
+		end
+	end
+
+	addSavedMultiDropdown(silentAimSection, "IgnoreTeamsDropdown", "Ignore Teams", teamValues, "IgnoreTeams", "Neutral")
+end
+
+local meleeSection = Tabs.Combat:Section({ Name = "Melee", Side = 1 })
+
+addToggle(meleeSection, "MeleeAuraToggle", "Melee Aura", Config.MeleeAura, function(Value)
+	Config.MeleeAura = Value
+	SaveConfig()
+end)
+
+-- Player
+local movementSection = Tabs.Player:Section({ Name = "Movement", Side = 1 })
+
+addToggle(movementSection, "LoopSpeedToggle", "Walk Speed", Config.LoopSpeedEnabled, function(Value)
+	Config.LoopSpeedEnabled = Value
+	if not Value then
+		local char = LocalPlayer.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		if hum then
+			hum.WalkSpeed = 16
+		end
+	end
+	SaveConfig()
+end)
+
+addSlider(movementSection, "WalkSpeedSlider", "Speed", Config.WalkSpeed or 30, 30, 100, function(Value)
+	Config.WalkSpeed = math.clamp(Value, 30, 100)
+	SaveConfig()
+end)
+
+addToggle(movementSection, "InfJumpToggle", "Infinite Jump", Config.InfJumpEnabled, function(Value)
+	Config.InfJumpEnabled = Value
+	SaveConfig()
+end)
+
+FlyToggle = addToggle(movementSection, "FlyToggle", "Fly", Config.FlyEnabled, function(Value)
+	setFlyEnabled(Value)
+end)
+
+addSlider(movementSection, "FlySpeedSlider", "Fly Speed", Config.FlySpeed or 5, 1, 10, function(Value)
+	Config.FlySpeed = math.clamp(Value, 1, 10)
+	SaveConfig()
+end)
+
+NoclipToggle = addToggle(movementSection, "NoclipToggle", "Noclip", Config.NoclipEnabled, function(Value)
+	setNoclipEnabled(Value)
+end)
+
+local visibilitySection = Tabs.Player:Section({ Name = "Visibility", Side = 2 })
+
+addToggle(visibilitySection, "InvisibleToggle", "Invisible", Config.InvisibleEnabled, function(Value)
+	setInvisibleEnabled(Value)
+end)
+
+-- ESP
+local espSection = Tabs.ESP:Section({ Name = "ESP", Side = 1 })
+
+addToggle(espSection, "ESPPlayersToggle", "ESP Players", Config.ESPEnabled, function(Value)
+	Config.ESPEnabled = Value
+	SaveConfig()
+	if not Value then
+		clearPlayerESP()
+	end
+end)
+
+addToggle(espSection, "ESPHPToggle", "ESP HP", Config.ESPHPEnabled, function(Value)
+	Config.ESPHPEnabled = Value
+	SaveConfig()
+	if Config.ESPEnabled then
+		updateESP()
+	end
+end)
+
+-- Teleport
+local function teleportToLocation(targetCFrame)
+	local char = LocalPlayer.Character
+	local hum = char and char:FindFirstChildOfClass("Humanoid")
+	local hrp = char and char:FindFirstChild("HumanoidRootPart")
+	if not char or not hum or hum.Health <= 0 or not hrp then return end
+	local wasInvisPaused = invisPaused
+	invisPaused = true
+	restoreInvisRoot()
+	invisSavedCF = nil
+	invisSavedVel = nil
+	invisUndergroundCF = nil
+	if hum.Sit then
+		hum.Sit = false
+		task.wait(0.05)
+	end
+	if not hrp.Parent or hum.Health <= 0 then
+		invisPaused = wasInvisPaused
+		return
+	end
+	hrp.AssemblyLinearVelocity = Vector3.zero
+	hrp.AssemblyAngularVelocity = Vector3.zero
+	hrp.CFrame = targetCFrame
+	invisPaused = wasInvisPaused
+end
+
+local locationSection = Tabs.Teleport:Section({ Name = "Locations", Side = 1 })
+
+do
+	local teleportLocations = {
+		{ Name = "Criminal Base", Desc = "วาร์ปไปฐานโจร", CF = CFrame.new(-980.31, 108.06, 2032.80, 0.85, -0.00, -0.52, -0.00, 1.00, -0.00, 0.52, 0.00, 0.85) },
+		{ Name = "Police Room", Desc = "วาร์ปไปห้องตำรวจ", CF = CFrame.new(810.93, 99.98, 2246.84, -0.92, 0.00, 0.39, 0.00, 1.00, 0.00, -0.39, 0.00, -0.92) },
+		{ Name = "Prison", Desc = "วาร์ปไปคุก", CF = CFrame.new(786.41, 122.04, 2588.29, 0.58, 0.00, -0.81, -0.00, 1.00, 0.00, 0.81, -0.00, 0.58) },
+		{ Name = "Prison Cells", Desc = "วาร์ปไปห้องขัง", CF = CFrame.new(916.97, 99.99, 2444.34, -0.17, 0.00, -0.99, 0.00, 1.00, 0.00, 0.99, -0.00, -0.17) },
+		{ Name = "Cafeteria", Desc = "วาร์ปไปโรงอาหาร", CF = CFrame.new(912.51, 99.99, 2306.95, 1.00, -0.00, 0.09, 0.00, 1.00, -0.00, -0.09, 0.00, 1.00) },
+		{ Name = "Sewers", Desc = "วาร์ปไปท่อระบายน้ำ", CF = CFrame.new(918.52, 78.70, 2423.11, 1.00, 0.00, -0.02, 0.00, 1.00, 0.00, 0.02, -0.00, 1.00) },
+	}
+
+	for _, loc in ipairs(teleportLocations) do
+		locationSection:Button({
+			Name = loc.Name,
+			Desc = loc.Desc,
+			Callback = function()
+				task.spawn(teleportToLocation, loc.CF)
+			end,
+		})
+	end
+end
+
+local teleportPlayerSection = Tabs.Teleport:Section({ Name = "Players", Side = 2 })
+
+PlayerTarget.TeleportPlayerDropdown = addDropdown(teleportPlayerSection, "TeleportPlayerDropdown", "Select Player", PlayerTarget.teleportDropdownCache.values, "", function(Value)
+	PlayerTarget.selectedTeleportPlayerName = Value
+end)
+
+teleportPlayerSection:Button({
+	Name = "Teleport",
+	Desc = "วาร์ปไปหาผู้เล่นที่เลือก",
+	Callback = function()
+		local target = PlayerTarget.selectedTeleportPlayerName and Players:FindFirstChild(PlayerTarget.selectedTeleportPlayerName)
+		local tChar = target and target.Character
+		local tHum = tChar and tChar:FindFirstChildOfClass("Humanoid")
+		local tHrp = tChar and (tChar:FindFirstChild("HumanoidRootPart") or tChar:FindFirstChild("Torso") or tChar:FindFirstChild("UpperTorso"))
+		if not target or target == LocalPlayer or not tChar or not tHum or tHum.Health <= 0 or not tHrp then
+			notify("Teleport", "Player not found", "Warning")
+			return
+		end
+		task.spawn(teleportToLocation, CFrame.new(tHrp.Position + Vector3.new(0, 2, 0)))
+	end,
+})
+
+for _, player in ipairs(Players:GetPlayers()) do
+	PlayerTarget.bindPlayerTeamListener(player)
+end
+
+Players.PlayerAdded:Connect(function(player)
+	PlayerTarget.bindPlayerTeamListener(player)
+	PlayerTarget.schedulePlayerDropdownRefresh()
+end)
+
+Players.PlayerRemoving:Connect(function(player)
+	if PlayerTarget.playerTeamConns[player] then
+		PlayerTarget.playerTeamConns[player]:Disconnect()
+		PlayerTarget.playerTeamConns[player] = nil
+	end
+	PlayerTarget.schedulePlayerDropdownRefresh()
+end)
+
+-- Misc
+local getGunSection = Tabs.Misc:Section({ Name = "Get Gun", Side = 1 })
+
+do
+	local gunValues = ItemSystem.getGunList()
+	addSavedMultiDropdown(getGunSection, "SelectGunDropdown", "Select Gun", gunValues, "SelectedGuns", nil)
+
+	local prevAutoSelectedGuns = {}
+
+	local function runAutoGetGunCheck()
+		if not Config.AutoGetGun or ItemSystem.isGettingGun() then return end
+		if os.clock() < autoGunSpawnWaitUntil then return end
+		if isNeutralPlayer(LocalPlayer) then return end
+		local char = LocalPlayer.Character
+		local hum = char and char:FindFirstChildOfClass("Humanoid")
+		local hrp = char and char:FindFirstChild("HumanoidRootPart")
+		if not char or not hum or hum.Health <= 0 or not hrp or hum.Sit then return end
+
+		local now = os.clock()
+		local missingList = {}
+		for _, gName in ipairs(gunValues) do
+			local isSelected = Config.SelectedGuns[gName] == true
+			if isSelected and not prevAutoSelectedGuns[gName] then
+				autoGunCooldown[gName] = nil
+			end
+			prevAutoSelectedGuns[gName] = isSelected or nil
+			if isSelected and not ItemSystem.playerOwnsTool(gName) then
+				local cdUntil = autoGunCooldown[gName] or 0
+				if now >= cdUntil then
+					table.insert(missingList, gName)
+				end
+			end
+		end
+
+		if #missingList > 0 then
+			ItemSystem.getGunsAndReturn(missingList, true)
+			local afterNow = os.clock()
+			for _, gName in ipairs(missingList) do
+				if not ItemSystem.playerOwnsTool(gName) then
+					autoGunCooldown[gName] = afterNow + 8
+				else
+					autoGunCooldown[gName] = nil
+				end
+			end
+		end
+	end
+
+	LocalPlayer:GetPropertyChangedSignal("Team"):Connect(function()
+		autoGunCooldown = {}
+	end)
+
+	task.spawn(function()
+		while true do
+			if Config.AutoGetGun then
+				pcall(runAutoGetGunCheck)
+				task.wait(0.35)
+			else
+				task.wait(0.5)
+			end
+		end
+	end)
+
+	getGunSection:Button({
+		Name = "Get Gun",
+		Desc = "รับปืนที่เลือก",
+		Callback = function()
+			local selectedList = {}
+			for _, gName in ipairs(gunValues) do
+				if Config.SelectedGuns[gName] == true then
+					table.insert(selectedList, gName)
+				end
+			end
+			task.spawn(function()
+				ItemSystem.getGunsAndReturn(selectedList)
+			end)
+		end,
+	})
+
+	addToggle(getGunSection, "AutoGetGunToggle", "Auto Get Gun", Config.AutoGetGun, function(Value)
+		Config.AutoGetGun = Value
+		autoGunCooldown = {}
+		SaveConfig()
+		if Value then
+			task.spawn(runAutoGetGunCheck)
+		end
+	end)
+end
+
+local vehicleSection = Tabs.Misc:Section({ Name = "Vehicle", Side = 2 })
+
+addToggle(vehicleSection, "VehicleFlyToggle", "Vehicle Fly", Config.VehicleFlyEnabled, function(Value)
+	setVehicleFlyEnabled(Value)
+end)
+
+local itemsSection = Tabs.Misc:Section({ Name = "Items", Side = 2 })
+
+addToggle(itemsSection, "AutoPickupToggle", "Auto Pickup Item", Config.AutoPickupItems, function(Value)
+	Config.AutoPickupItems = Value
+	SaveConfig()
+	if Value then
+		task.spawn(ItemSystem.scanAndPickupDroppedItems)
+	end
+end)
+
+local audioSection = Tabs.Misc:Section({ Name = "Bullet & Audio", Side = 1 })
+
+addToggle(audioSection, "PurpleTracerToggle", "Purple Bullet Tracer", Config.PurpleTracers, function(Value)
+	Config.PurpleTracers = Value
+	SaveConfig()
+end)
+
+addToggle(audioSection, "CustomGunSoundToggle", "Gun Sound", Config.CustomGunSound, function(Value)
+	Config.CustomGunSound = Value
+	SaveConfig()
+end)
+
+addToggle(audioSection, "HitSoundToggle", "Gun Hit", Config.HitSoundEnabled, function(Value)
+	Config.HitSoundEnabled = Value
+	SaveConfig()
+end)
+
+-- Settings (keybind ใช้ของ Library แทนตัวดักปุ่มเดิม)
+local keybindSection = Tabs.Settings:Section({ Name = "Keybinds", Side = 1 })
+
+addToggle(keybindSection, "DisableKeybindsToggle", "Disable All Keybinds", Config.DisableKeybinds, function(Value)
+	Config.DisableKeybinds = Value
+	SaveConfig()
+end)
+
+keybindSection:Label("Fly"):Keybind({
+	Name = "Fly Keybind", Flag = "KeyFly", Mode = "Toggle", Default = flyKey,
+	Callback = function()
+		if Config.DisableKeybinds or UserInputService:GetFocusedTextBox() then return end
+		toggleFeatureWithToggle(FlyToggle, function()
+			return Config.FlyEnabled
+		end, setFlyEnabled)
+	end,
+})
+
+keybindSection:Label("Noclip"):Keybind({
+	Name = "Noclip Keybind", Flag = "KeyNoclip", Mode = "Toggle", Default = noclipKey,
+	Callback = function()
+		if Config.DisableKeybinds or UserInputService:GetFocusedTextBox() then return end
+		toggleFeatureWithToggle(NoclipToggle, function()
+			return Config.NoclipEnabled
+		end, setNoclipEnabled)
+	end,
+})
